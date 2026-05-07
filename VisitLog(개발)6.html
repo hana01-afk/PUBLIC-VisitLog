@@ -1,0 +1,2098 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>VisitLog — 하나감정평가법인</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<style>
+:root {
+  --bg:      #0D1B2A; --bg2:#152236; --bg3:#1C2E42; --bg4:#243A52;
+  --sf:      #182E42;
+  --bd:      rgba(255,255,255,.07); --bd2:rgba(255,255,255,.13);
+  --tx:      #EDF2F7; --tx2:#8BAABF; --tx3:#4E6880;
+  --ac:      #3B9EFF; --teal:#4ECDC4;
+  --red:#E05252; --rbg:rgba(224,82,82,.12);
+  --or:#E8923A;  --obg:rgba(232,146,58,.12);
+  --yw:#F0C040;  --ybg:rgba(240,192,64,.10);
+  --gn:#2ECC71;  --gbg:rgba(46,204,113,.12);
+  --r:12px; --rs:8px;
+  --fn:'Noto Sans KR',sans-serif; --mo:'JetBrains Mono',monospace;
+  --tr:.15s ease;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:var(--fn);background:var(--bg);color:var(--tx);min-height:100vh;max-width:430px;margin:0 auto;overflow-x:hidden}
+#app{display:flex;flex-direction:column;min-height:100vh}
+
+/* Header */
+.hdr{background:var(--bg);padding:50px 18px 12px;border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:100}
+.hdr-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.hdr-t{font-size:19px;font-weight:700;letter-spacing:-.4px}
+.hdr-s{font-size:11px;color:var(--tx3);margin-top:2px}
+
+/* Page */
+.page{flex:1;overflow-y:auto;padding-bottom:90px}
+
+/* Bottom Nav */
+.bnav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;background:var(--bg2);border-top:1px solid var(--bd);display:flex;align-items:center;padding:6px 0 22px;z-index:200}
+.ni{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 0;cursor:pointer;color:var(--tx3);font-size:9px;font-weight:500;transition:color var(--tr)}
+.ni.on{color:var(--ac)}
+.ni svg{width:22px;height:22px}
+.nf{flex:1;display:flex;justify-content:center;align-items:center}
+.fab{width:50px;height:50px;background:var(--ac);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;margin-top:-18px;box-shadow:0 4px 18px rgba(59,158,255,.4);transition:transform var(--tr)}
+.fab:active{transform:scale(.93)}
+.fab svg{width:22px;height:22px;color:#fff}
+
+/* Cards */
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);padding:13px 15px;margin:0 14px 9px}
+
+/* Urgency */
+.u-r{--uc:var(--red);--ub:var(--rbg)} .u-o{--uc:var(--or);--ub:var(--obg)}
+.u-y{--uc:var(--yw);--ub:var(--ybg)} .u-g{--uc:var(--gn);--ub:var(--gbg)}
+
+/* Client card */
+.cc{display:flex;align-items:center;gap:11px;cursor:pointer}
+.cs{width:4px;border-radius:2px;background:var(--uc);align-self:stretch;flex-shrink:0}
+.cb{flex:1;min-width:0}
+.cn{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cm{font-size:11px;color:var(--tx2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cr{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0}
+.dd{font-size:11px;font-weight:700;color:var(--uc);background:var(--ub);padding:3px 9px;border-radius:20px;font-family:var(--mo)}
+
+/* Chips */
+.chips{display:flex;gap:6px;overflow-x:auto;padding:10px 14px 4px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{white-space:nowrap;font-size:11px;font-weight:500;padding:5px 12px;border-radius:20px;border:1px solid var(--bd2);color:var(--tx2);background:transparent;cursor:pointer;transition:all var(--tr)}
+.chip.on{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600}
+
+/* Labels */
+.slbl{font-size:10.5px;font-weight:700;color:var(--tx3);letter-spacing:.07em;text-transform:uppercase;padding:14px 14px 5px}
+
+/* Search */
+.sw{padding:10px 14px}
+.si{display:flex;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--bd2);border-radius:var(--rs);padding:0 11px}
+.si svg{width:15px;height:15px;color:var(--tx3);flex-shrink:0}
+.si input{border:none;background:transparent;padding:10px 0;font-size:13px;color:var(--tx);flex:1;outline:none;font-family:var(--fn)}
+
+/* Forms */
+.ig{margin-bottom:13px}
+.il{font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:5px;display:block}
+input[type=text],input[type=password],input[type=date],textarea,select{width:100%;background:var(--bg3);border:1px solid var(--bd2);border-radius:var(--rs);color:var(--tx);font-family:var(--fn);font-size:13px;padding:9px 12px;outline:none;transition:border-color var(--tr);-webkit-appearance:none}
+input:focus,textarea:focus,select:focus{border-color:var(--ac)}
+textarea{resize:none;height:78px;line-height:1.6}
+select option{background:var(--bg3)}
+
+/* Buttons */
+.btn{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:11px;border-radius:var(--rs);font-family:var(--fn);font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all var(--tr)}
+.btn:active{transform:scale(.97)}
+.bp{background:var(--ac);color:#fff} .bs{background:var(--bg3);color:var(--tx);border:1px solid var(--bd2)}
+.bd2{background:var(--rbg);color:var(--red);border:1px solid rgba(224,82,82,.25)}
+.bg{background:var(--gbg);color:var(--gn);border:1px solid rgba(46,204,113,.25)}
+.bsm{padding:6px 13px;width:auto;font-size:11px} .mt2{margin-top:8px}
+
+/* Type grid */
+.tg{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:14px}
+.tb{padding:10px 7px;border-radius:var(--rs);border:1px solid var(--bd2);font-size:12px;font-weight:500;text-align:center;color:var(--tx2);cursor:pointer;background:var(--bg3);transition:all var(--tr)}
+.tb.on{border-color:var(--teal);color:var(--teal);background:rgba(78,205,196,.08)}
+
+/* Cycle */
+.crow{display:flex;align-items:center;justify-content:space-between;padding:11px 15px;border-bottom:1px solid var(--bd)}
+.crow:last-child{border-bottom:none}
+.cc2{display:flex;align-items:center;gap:10px}
+.cb2{width:28px;height:28px;border-radius:50%;border:1px solid var(--bd2);background:var(--bg3);color:var(--tx);font-size:17px;display:flex;align-items:center;justify-content:center;cursor:pointer;line-height:1;transition:all var(--tr)}
+.cb2:active{background:var(--bg4);transform:scale(.88)}
+.cv{font-size:13.5px;font-weight:600;font-family:var(--mo);color:var(--ac);min-width:42px;text-align:center}
+
+/* Upload */
+.uz{border:2px dashed var(--bd2);border-radius:var(--r);padding:26px 14px;text-align:center;cursor:pointer;transition:all var(--tr);margin:10px 14px}
+.uz:hover,.uz.drag{border-color:var(--ac);background:rgba(59,158,255,.04)}
+.uz p{font-size:13px;color:var(--tx2);margin-top:8px} .uz span{font-size:11px;color:var(--tx3)}
+
+/* Map container */
+#gmap{height:260px;border-radius:var(--r);margin:10px 14px;border:1px solid var(--bd);background:var(--bg3)}
+#dmmap{height:170px;border-radius:var(--r);margin:0 14px 10px;border:1px solid var(--bd);background:var(--bg3)}
+
+/* Stats */
+.sr{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:10px 14px}
+.sc{background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);padding:11px;text-align:center}
+.sn{font-size:26px;font-weight:700;font-family:var(--mo)} .sl{font-size:10px;color:var(--tx3);margin-top:2px;font-weight:500}
+
+/* History */
+.hi{display:flex;gap:11px;padding:11px 14px;border-bottom:1px solid var(--bd);cursor:pointer}
+.hd{width:8px;height:8px;border-radius:50%;background:var(--ac);margin-top:5px;flex-shrink:0}
+.hb{flex:1} .ht{font-size:13px;font-weight:600} .hm{font-size:11px;color:var(--tx2);margin-top:3px}
+.hme{font-size:12px;color:var(--tx2);margin-top:5px;line-height:1.55}
+
+/* Field rows */
+.fr{display:flex;padding:9px 0;border-bottom:1px solid var(--bd);font-size:13px}
+.fr:last-child{border-bottom:none}
+.fl{color:var(--tx3);width:78px;flex-shrink:0;font-size:11.5px} .fv{flex:1;font-weight:500;word-break:break-all}
+
+/* Progress */
+.pb{height:4px;background:var(--bd);border-radius:2px;overflow:hidden}
+.pbi{height:100%;border-radius:2px;transition:width .3s ease}
+
+/* Spinner */
+.spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.2);border-top-color:var(--ac);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* GPS bar */
+.gpb{display:flex;align-items:center;gap:8px;padding:7px 14px;background:rgba(59,158,255,.06);border-bottom:1px solid var(--bd);font-size:11px;color:var(--ac)}
+.gpd{width:7px;height:7px;border-radius:50%;background:var(--ac);animation:pl 1.5s infinite}
+@keyframes pl{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* Toast */
+.toast{position:fixed;bottom:98px;left:50%;transform:translateX(-50%);background:var(--bg4);border:1px solid var(--bd2);color:var(--tx);padding:9px 18px;border-radius:24px;font-size:12px;font-weight:500;z-index:1000;white-space:nowrap;animation:ti .18s ease,to2 .18s ease 2.8s forwards}
+@keyframes ti{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+@keyframes to2{to{opacity:0;transform:translateX(-50%) translateY(8px)}}
+
+/* Empty */
+.empty{text-align:center;padding:56px 28px;color:var(--tx3)}
+.empty h3{font-size:14px;color:var(--tx2);margin:10px 0 6px} .empty p{font-size:12px;line-height:1.65}
+
+/* Badges */
+.badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;letter-spacing:.02em}
+.br{background:var(--rbg);color:var(--red)} .bo{background:var(--obg);color:var(--or)}
+.bg2{background:var(--gbg);color:var(--gn)} .ba{background:rgba(59,158,255,.12);color:var(--ac)}
+
+/* Drive / Sheets status */
+.ds{display:flex;align-items:center;gap:8px;font-size:12px;padding:8px 11px;border-radius:var(--rs);border:1px solid var(--bd2);margin-bottom:11px}
+.ds.ok{background:var(--gbg);border-color:rgba(46,204,113,.3);color:var(--gn)}
+.ds.err{background:var(--rbg);border-color:rgba(224,82,82,.25);color:var(--red)}
+.ds.busy{background:rgba(139,170,191,.1);color:var(--tx2)}
+
+/* Login */
+.lsc{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:32px 24px;text-align:center}
+.llo{width:72px;height:72px;background:var(--ac);border-radius:20px;display:flex;align-items:center;justify-content:center;margin-bottom:20px;font-size:32px}
+.lt{font-size:22px;font-weight:700;margin-bottom:6px} .ls{font-size:13px;color:var(--tx2);margin-bottom:32px;line-height:1.6}
+
+/* Sheets progress */
+.sheets-progress{font-size:11px;color:var(--ac);padding:6px 0;text-align:center;font-family:var(--mo)}
+
+.tag{font-size:10px;padding:2px 7px;border-radius:5px;background:rgba(78,205,196,.12);color:var(--teal);font-weight:500}
+.row{display:flex;align-items:center} .f1{flex:1} .jb{justify-content:space-between}
+.g2{gap:8px} .g3{gap:12px} .mt3{margin-top:12px}
+.divider{height:1px;background:var(--bd);margin:8px 14px}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+'use strict';
+// ═══════════════════════════════════════════════
+// 0. CONFIG
+// ═══════════════════════════════════════════════
+const GEMINI_KEY   = 'AIzaSyAWPlv5ImLEHPeARwPcbPFTGg0QRN7yZPg';
+const GEMINI_MODEL = 'gemini-2.0-flash';
+const STORAGE_KEY  = 'vl_hana_v4';
+const ADMIN_PW_KEY = 'vl_hana_adminpw'; // 관리자 비밀번호는 별도 key에 저장
+const CFG_KEY      = 'vl_hana_cfg';     // 전역 설정(OAuth·Maps키) 별도 저장
+
+const CATEGORIES = ['제1금융권','제2금융권/단위조합','공공기관/특수기관','일반기업','증권사/보험사'];
+const DEF_CYCLES = {'제1금융권':30,'제2금융권/단위조합':60,'공공기관/특수기관':90,'일반기업':45,'증권사/보험사':30};
+const VISIT_TYPES = ['단순 방문','기존 거래처 관리','신규 개척','기타 약속'];
+const CYCLE_HINTS = {
+  '제1금융권':'국민·신한·우리·하나·기업은행',
+  '제2금융권/단위조합':'새마을금고·농협·수협 단위조합',
+  '공공기관/특수기관':'지자체·공기업·보증기관',
+  '일반기업':'중소기업·제조사 등',
+  '증권사/보험사':'금융투자업 관련 기관',
+};
+
+// Sheets column headers
+const CLIENT_HEADERS  = ['ID','회사명','지점명','카테고리','주소','담당자','연락처','담당직원','최근방문','위도','경도','등록일'];
+const VISIT_HEADERS   = ['ID','거래처ID','방문유형','날짜','메모','다음예정','등록일'];
+const CYCLE_HEADERS   = ['카테고리','방문주기(일)'];
+
+// ═══════════════════════════════════════════════
+// 1. STATE
+// ═══════════════════════════════════════════════
+// ── 전역 설정 (관리자가 설정, 팀원 공유) ──────────────────
+function loadCfg(){
+  try{ return JSON.parse(localStorage.getItem(CFG_KEY)); }catch{ return null; }
+}
+function saveCfg(c){ try{ localStorage.setItem(CFG_KEY,JSON.stringify(c)); }catch{} }
+
+const _cfg = loadCfg() || {};
+let CFG = {
+  driveClientId: _cfg.driveClientId || '',
+  mapsKey:       _cfg.mapsKey       || '',
+  adminPwHash:   _cfg.adminPwHash   || '',
+  shareEnabled:  _cfg.shareEnabled  ?? false, // 내 거래처 공유 허용 여부
+};
+
+// ── 사용자 세션 상태 ───────────────────────────────────────
+function load(){ try{ return JSON.parse(localStorage.getItem(STORAGE_KEY)); }catch{ return null; } }
+function save(s){ try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(s)); }catch{} }
+
+const _s = load() || {};
+let S = {
+  user:    _s.user    || null,   // {name, role:'admin'|'member', spreadsheetId}
+  clients: _s.clients || [],
+  visits:  _s.visits  || [],
+  cycles:  _s.cycles  || {...DEF_CYCLES},
+  drive:   _s.drive   || {connected:false,accessToken:null,expiresAt:null},
+};
+
+function set(patch,skipSave=false){
+  S={...S,...patch};
+  if(!skipSave) save(S);
+  render();
+}
+
+// SHA-256 해시 (관리자 비밀번호 저장용)
+async function sha256(str){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// ═══════════════════════════════════════════════
+// 2. UTILS
+// ═══════════════════════════════════════════════
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+
+function urgency(lastDate,cycle){
+  if(!lastDate) return {pct:999,cls:'u-r',bar:'#E05252',lbl:'미방문',dd:'미방문'};
+  // 날짜 유효성 검사 (엑셀 시리얼 번호 등 잘못된 값 방어)
+  const d=new Date(lastDate);
+  if(isNaN(d.getTime())||d.getFullYear()<2000||d.getFullYear()>2100){
+    return {pct:999,cls:'u-r',bar:'#E05252',lbl:'미방문',dd:'미방문'};
+  }
+  const days=Math.floor((Date.now()-d)/86400000);
+  if(days<0) return {pct:0,cls:'u-g',bar:'#2ECC71',lbl:'양호',dd:`D-${cycle}`}; // 미래 날짜 방어
+  const pct=Math.round(days/cycle*100);
+  if(pct>=111) return{pct,cls:'u-r',bar:'#E05252',lbl:'초과',   dd:`D+${days-cycle}`};
+  if(pct>= 91) return{pct,cls:'u-o',bar:'#E8923A',lbl:'위험',   dd:`D-${cycle-days}`};
+  if(pct>= 71) return{pct,cls:'u-y',bar:'#F0C040',lbl:'주의',   dd:`D-${cycle-days}`};
+  return             {pct,cls:'u-g',bar:'#2ECC71',lbl:'양호',   dd:`D-${cycle-days}`};
+}
+function getU(c){ return urgency(c.lastVisitDate,S.cycles[c.category]||45); }
+
+function hav(la1,lo1,la2,lo2){
+  const R=6371000,r=Math.PI/180;
+  const a=Math.sin((la2-la1)*r/2)**2+Math.cos(la1*r)*Math.cos(la2*r)*Math.sin((lo2-lo1)*r/2)**2;
+  return Math.round(2*R*Math.asin(Math.sqrt(a)));
+}
+function sim(a,b){
+  a=a.replace(/[^가-힣a-z0-9]/gi,'').toLowerCase();
+  b=b.replace(/[^가-힣a-z0-9]/gi,'').toLowerCase();
+  if(a===b)return 1;
+  const s=new Set(a);return[...b].filter(c=>s.has(c)).length/Math.max(a.length,b.length);
+}
+function autoCat(n=''){
+  const s=n.replace(/[\s()\[\]㈜주식회사]/g,'');
+
+  // ── 제1금융권: 시중은행·특수은행 ──────────────────────────
+  if(/(국민|신한|우리|하나|기업|농협|수협|산업|외환|한국씨티|SC제일|씨티|도이치|BNK|DGB|JB|카카오|케이|토스|광주|전북|제주|경남|부산|대구)은행/.test(s))return'제1금융권';
+  if(/은행/.test(s)&&!/(저축은행|상호저축)/.test(s))return'제1금융권';
+
+  // ── 제2금융권/단위조합 ──────────────────────────────────
+  if(/(새마을금고|마을금고)/.test(s))return'제2금융권/단위조합';
+  if(/(단위농협|지역농협|농협단위|농업협동조합)/.test(s))return'제2금융권/단위조합';
+  if(/(단위수협|지구별수협|수협단위|수산업협동조합)/.test(s))return'제2금융권/단위조합';
+  if(/(신용협동조합|신협)/.test(s))return'제2금융권/단위조합';
+  if(/(저축은행|상호저축|상호금융)/.test(s))return'제2금융권/단위조합';
+  if(/(조합|금고|공제)/.test(s)&&!/(연금|공무원|군인|사학|과학기술|신용보증|기술신용)/.test(s))return'제2금융권/단위조합';
+
+  // ── 공공기관/특수기관 ───────────────────────────────────
+  if(/(한국토지주택|LH|SH공사|GH|경기도시공사)/.test(s))return'공공기관/특수기관';
+  if(/(기술보증기금|기보|신용보증기금|신보|주택금융공사|HF|중소벤처|중진공|소상공인|IBK기업|산업은행|수출입은행)/.test(s))return'공공기관/특수기관';
+  if(/(시청|구청|도청|군청|읍사무소|면사무소|주민센터|행정복지센터)/.test(s))return'공공기관/특수기관';
+  if(/(국가|정부|공무원|공단|공사|공기업|청(?!구|년)|원(?!금)|위원회|처$|부$|청$)/.test(s))return'공공기관/특수기관';
+  if(/(감정원|한국부동산원|국토연구원|한국감정평가사)/.test(s))return'공공기관/특수기관';
+
+  // ── 증권사/보험사 ────────────────────────────────────────
+  if(/(증권|투자증권|자산운용|선물|자산관리)/.test(s))return'증권사/보험사';
+  if(/(생명보험|손해보험|화재보험|보험사|보험(?!료|증)|공제(?=회|조합))/.test(s))return'증권사/보험사';
+
+  return'일반기업';
+}
+function toast(msg){
+  document.querySelectorAll('.toast').forEach(t=>t.remove());
+  const el=document.createElement('div');el.className='toast';el.textContent=msg;
+  document.body.appendChild(el);setTimeout(()=>el.remove(),3200);
+}
+function parseRows(rows){
+  // 실제 업무 엑셀 헤더명 매핑
+  const MAP={
+    '회사명':'companyName','업체명':'companyName','거래처명':'companyName',
+    '거래처':'companyName','기관명':'companyName','의뢰처':'companyName',
+    '의뢰기관':'companyName','금융기관':'companyName','금융기관명':'companyName',
+    '지점명':'branchName','지점':'branchName','영업점':'branchName',
+    '의뢰부서':'branchName','부서명':'branchName','센터명':'branchName',
+    '담당자':'contactName','담당자명':'contactName','의뢰담당':'contactName',
+    '의뢰담당자':'contactName','담당':'contactName','성명':'contactName',
+    '담당자(의뢰)':'contactName',
+    '전화':'contactPhone','연락처':'contactPhone','전화번호':'contactPhone',
+    '팩스번호':'contactPhone','휴대폰':'contactPhone','핸드폰':'contactPhone',
+    // 주소/소재지는 물건 소재지이므로 거래처 주소로 사용하지 않음
+    // '주소':'address','소재지':'address',  ← 제거
+    '카테고리':'category','분류':'category','업종':'category','업무구분':'category',
+    '담당직원':'assignee','직원':'assignee','팀':'assignee','담당팀':'assignee',
+    '내부담당자':'assignee','담당자(내부)':'assignee','본사담당':'assignee',
+  };
+
+  if(!rows.length)return[];
+
+  // 헤더 행 탐색 (최대 5행)
+  let headerRowIdx=0;
+  for(let i=0;i<Math.min(rows.length,5);i++){
+    const row=rows[i];
+    const matched=row.filter(h=>MAP[String(h||'').trim()]);
+    if(matched.length>=2){headerRowIdx=i;break;}
+  }
+
+  const hdrs=rows[headerRowIdx].map(h=>MAP[String(h||'').trim()]||null);
+  const dataRows=rows.slice(headerRowIdx+1);
+
+  // 1단계: 모든 행 파싱
+  const rawList=dataRows.map(row=>{
+    const o={};
+    hdrs.forEach((f,i)=>{
+      if(f&&row[i]!=null&&String(row[i]).trim()){
+        if(!o[f]) o[f]=String(row[i]).trim();
+      }
+    });
+    if(!o.companyName)return null;
+
+    // 거래처명에서 지점명 분리
+    let companyName=o.companyName;
+    let branchName=o.branchName||'';
+    if(!branchName){
+      const m=companyName.match(/^(.+?)\s+([\w가-힣]+(?:지점|영업점|센터장?|지사|출장소|본점|지부|본부|사업단))$/);
+      if(m){companyName=m[1];branchName=m[2];}
+    }
+
+    return{
+      companyName,branchName,
+      contactName:o.contactName||'',
+      contactPhone:o.contactPhone||'',
+      assignee:o.assignee||(S.user?.name||''),
+    };
+  }).filter(Boolean);
+
+  // 2단계: 동일 거래처명+지점명 통합 (담당자가 다르면 복수 표시)
+  const merged=new Map(); // key: "companyName|branchName"
+  rawList.forEach(r=>{
+    const key=r.companyName+'|'+r.branchName;
+    if(merged.has(key)){
+      const existing=merged.get(key);
+      // 담당자 병합
+      if(r.contactName && !existing.contacts.includes(r.contactName)){
+        existing.contacts.push(r.contactName);
+      }
+      if(!existing.contactPhone && r.contactPhone) existing.contactPhone=r.contactPhone;
+      existing.count++;
+    }else{
+      merged.set(key,{
+        companyName:r.companyName,
+        branchName:r.branchName,
+        contacts: r.contactName?[r.contactName]:[],
+        contactPhone:r.contactPhone,
+        count:1,
+      });
+    }
+  });
+
+  // 3단계: 담당자가 빈 항목은 같은 회사명의 다른 항목에서 가져오기
+  const byCompany=new Map();
+  merged.forEach((v,k)=>{
+    if(!byCompany.has(v.companyName))byCompany.set(v.companyName,[]);
+    byCompany.get(v.companyName).push(v);
+  });
+  merged.forEach(v=>{
+    if(!v.contacts.length){
+      const others=byCompany.get(v.companyName)||[];
+      const donor=others.find(o=>o.contacts.length&&o!==v);
+      if(donor) v.contacts=[donor.contacts[0]];
+    }
+  });
+
+  // 4단계: 최종 객체 생성 (assignee 필드 제거)
+  return[...merged.values()].map(v=>{
+    const fullName=v.companyName+(v.branchName?' '+v.branchName:'');
+    const cat=autoCat(fullName);
+    return{
+      id:uid(),
+      companyName:v.companyName,
+      branchName:v.branchName,
+      category:cat,
+      address:'',  // 거래처 주소는 사용자가 직접 입력 또는 좌표 검색
+      contactName:v.contacts.join(', '),  // 복수 담당자 쉼표 병기
+      contactPhone:v.contactPhone||'',
+      ownerName:S.user?.name||'',  // 등록한 본인 (구분용, 표시 안함)
+      lastVisitDate:null,  // 미방문 디폴트
+      lat:null,lng:null,
+      createdAt:new Date().toISOString(),
+    };
+  });
+}
+
+// ═══════════════════════════════════════════════
+// 3. GEMINI API
+// ═══════════════════════════════════════════════
+const Gem={
+  async call(prompt,b64=null,mime='image/jpeg'){
+    const parts=[];
+    if(b64)parts.push({inlineData:{mimeType:mime,data:b64}});
+    parts.push({text:prompt});
+    const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.1,maxOutputTokens:1500}}),
+    });
+    if(!res.ok){
+      const e=await res.json().catch(()=>({}));
+      const msg=e?.error?.message||'';
+      // 쿼터 초과 시 사용자 친화적 메시지
+      if(res.status===429||msg.includes('quota')||msg.includes('RESOURCE_EXHAUSTED')){
+        const retryMatch=msg.match(/retry in ([\d.]+)s/i);
+        const wait=retryMatch?Math.ceil(parseFloat(retryMatch[1]))+'초':'잠시';
+        throw new Error(`Gemini API 일일 한도 초과\n${wait} 후 다시 시도하거나,\nAI Studio(aistudio.google.com)에서\n유료 플랜을 확인해주세요`);
+      }
+      throw new Error(msg||`Gemini 오류(${res.status})`);
+    }
+    const d=await res.json();
+    const txt=d?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if(!txt)throw new Error('Gemini 응답 없음');
+    return txt;
+  },
+  async card(b64){
+    const raw=await this.call(`이 명함 이미지를 분석하여 순수 JSON만 출력하세요 (마크다운, 설명 금지):
+{"companyName":"회사명","branchName":"지점명(없으면 빈문자열)","contactName":"담당자명",
+"contactPhone":"전화번호","address":"주소(없으면 빈문자열)","email":"이메일(없으면 빈문자열)",
+"position":"직책(없으면 빈문자열)",
+"category":"다음 중 하나만: 제1금융권|제2금융권/단위조합|공공기관/특수기관|증권사/보험사|일반기업"}`,b64);
+    return JSON.parse(raw.replace(/```json|```/g,'').trim());
+  },
+  async geocode(addr){
+    const raw=await this.call(`다음 주소의 위도와 경도를 JSON으로만 답하세요 (설명 없이, 숫자 정밀도 소수점 4자리):
+{"lat":37.0000,"lng":127.0000}
+주소: ${addr}`);
+    return JSON.parse(raw.replace(/```json|```/g,'').trim());
+  },
+  async parseList(txt){
+    const raw=await this.call(`다음 텍스트에서 거래처(금융기관, 기업 등) 목록을 추출하여 JSON 배열만 출력하세요 (마크다운 없이):
+[{"companyName":"회사명","branchName":"지점명","category":"제1금융권|제2금융권/단위조합|공공기관/특수기관|증권사/보험사|일반기업",
+"address":"주소","contactName":"담당자","contactPhone":"연락처","assignee":"담당직원"}]
+텍스트:\n${txt}`);
+    return JSON.parse(raw.replace(/```json|```/g,'').trim());
+  },
+};
+
+// ═══════════════════════════════════════════════
+// 4. GOOGLE DRIVE + SHEETS API
+// ═══════════════════════════════════════════════
+const GSheets={
+  tok(){
+    if(S.drive.accessToken&&Date.now()<S.drive.expiresAt)return S.drive.accessToken;
+    return null;
+  },
+  async req(url,opts={}){
+    const t=this.tok();if(!t)throw new Error('Drive 재연결이 필요합니다');
+    const res=await fetch(url,{...opts,headers:{'Authorization':`Bearer ${t}`,'Content-Type':'application/json',...(opts.headers||{})}});
+    if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e?.error?.message||`Sheets오류(${res.status})`);}
+    return res.json();
+  },
+
+  async connect(clientId){
+    return new Promise((ok,fail)=>{
+      if(!window.google?.accounts?.oauth2){fail(new Error('GIS 로딩 중입니다. 잠시 후 다시 시도하세요'));return;}
+      google.accounts.oauth2.initTokenClient({
+        client_id:clientId,
+        scope:'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file',
+        callback:r=>{
+          if(r.error){fail(new Error(r.error));return;}
+          set({drive:{...S.drive,connected:true,accessToken:r.access_token,expiresAt:Date.now()+r.expires_in*1000}});
+          ok();
+        },
+      }).requestAccessToken();
+    });
+  },
+
+  // 담당자별 스프레드시트 생성 or 기존 파일 찾기
+  async getOrCreateSheet(assignee){
+    const name=`VisitLog_${assignee}_하나감정평가법인`;
+    // Drive에서 동명 파일 검색
+    const q=encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`);
+    const list=await this.req(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+    if(list.files.length)return list.files[0].id;
+    // 없으면 새로 생성 (3개 탭)
+    const ss=await this.req('https://sheets.googleapis.com/v4/spreadsheets',{
+      method:'POST',
+      body:JSON.stringify({
+        properties:{title:name,locale:'ko_KR'},
+        sheets:[
+          {properties:{sheetId:0,title:'거래처목록',index:0}},
+          {properties:{sheetId:1,title:'방문기록',  index:1}},
+          {properties:{sheetId:2,title:'방문주기',  index:2}},
+        ],
+      }),
+    });
+    const ssId=ss.spreadsheetId;
+    // 헤더 초기화
+    await this.batchUpdate(ssId,[
+      {range:'거래처목록!A1',values:[CLIENT_HEADERS]},
+      {range:'방문기록!A1',  values:[VISIT_HEADERS]},
+      {range:'방문주기!A1',  values:[CYCLE_HEADERS]},
+    ]);
+    // 헤더 Bold 서식
+    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}:batchUpdate`,{
+      method:'POST',
+      body:JSON.stringify({requests:[0,1,2].map(si=>({
+        repeatCell:{
+          range:{sheetId:si,startRowIndex:0,endRowIndex:1,startColumnIndex:0,endColumnIndex:12},
+          cell:{userEnteredFormat:{textFormat:{bold:true},backgroundColor:{red:.13,green:.22,blue:.32}}},
+          fields:'userEnteredFormat(textFormat,backgroundColor)',
+        },
+      }))}),
+    });
+    return ssId;
+  },
+
+  async batchUpdate(ssId,updates){
+    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values:batchUpdate`,{
+      method:'POST',
+      body:JSON.stringify({valueInputOption:'RAW',data:updates.map(u=>({range:u.range,values:u.values}))}),
+    });
+  },
+
+  async readSheet(ssId,range){
+    const d=await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/${encodeURIComponent(range)}`);
+    return d.values||[];
+  },
+
+  // 본인 거래처를 본인 시트에 저장
+  async syncAll(onProgress){
+    const me=S.user?.name||'';
+    onProgress&&onProgress(`${me} 시트 준비 중...`);
+
+    // 공유받은 거래처 제외, 본인 거래처만
+    const myClients=S.clients.filter(c=>!c._shared&&(c.ownerName===me||!c.ownerName));
+    const myVisits =S.visits.filter(v=>myClients.some(c=>c.id===v.clientId));
+    const ssId=await this.getOrCreateSheet(me);
+
+    // 거래처 시트 행 (담당직원 컬럼은 빈값 유지 - 호환성)
+    const cRows=myClients.map(c=>[c.id,c.companyName,c.branchName,c.category,c.address,
+      c.contactName,c.contactPhone,c.ownerName||me,c.lastVisitDate||'',c.lat||'',c.lng||'',c.createdAt]);
+    const vRows=myVisits.map(v=>[v.id,v.clientId,v.type,v.date,v.memo||'',v.nextVisit||'',v.createdAt]);
+    // 방문주기 + 공유 허용 플래그
+    const cycRows=[
+      ['_SHARE_ENABLED', String(CFG.shareEnabled||false)],
+      ...Object.entries(S.cycles).map(([k,v])=>[k,v]),
+    ];
+
+    onProgress&&onProgress('기존 데이터 정리 중...');
+    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/거래처목록!A2:L:clear`,{method:'POST',body:'{}'});
+    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/방문기록!A2:G:clear`,   {method:'POST',body:'{}'});
+    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/방문주기!A2:B:clear`,   {method:'POST',body:'{}'});
+
+    onProgress&&onProgress(`${myClients.length}개 거래처 저장 중...`);
+    const updates=[];
+    if(cRows.length) updates.push({range:'거래처목록!A2',values:cRows});
+    if(vRows.length) updates.push({range:'방문기록!A2',  values:vRows});
+    if(cycRows.length)updates.push({range:'방문주기!A2', values:cycRows});
+    if(updates.length) await this.batchUpdate(ssId,updates);
+
+    set({user:{...S.user,spreadsheetId:ssId}},true);
+    save(S);
+  },
+
+  // 내 스프레드시트에서 불러오기
+  async loadMine(){
+    const name=S.user?.name||'공통';
+    const ssId=S.user?.spreadsheetId||await this.getOrCreateSheet(name);
+    set({user:{...S.user,spreadsheetId:ssId}},true);
+
+    const[cRows,vRows,cycRows]=await Promise.all([
+      this.readSheet(ssId,'거래처목록!A2:L'),
+      this.readSheet(ssId,'방문기록!A2:G'),
+      this.readSheet(ssId,'방문주기!A2:B'),
+    ]);
+    const clients=cRows.map(r=>({
+      id:r[0]||uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
+      address:r[4]||'',contactName:r[5]||'',contactPhone:r[6]||'',ownerName:r[7]||name,
+      lastVisitDate:r[8]||null,lat:r[9]?parseFloat(r[9]):null,lng:r[10]?parseFloat(r[10]):null,
+      createdAt:r[11]||new Date().toISOString(),
+    })).filter(c=>c.companyName);
+    const visits=vRows.map(r=>({
+      id:r[0]||uid(),clientId:r[1]||'',type:r[2]||'단순 방문',date:r[3]||'',
+      memo:r[4]||'',nextVisit:r[5]||'',createdAt:r[6]||new Date().toISOString(),
+    })).filter(v=>v.clientId);
+    const cycles={...DEF_CYCLES};
+    let shareFlag=null;
+    cycRows.forEach(r=>{
+      if(r[0]==='_SHARE_ENABLED'){shareFlag=r[1]==='true';return;}
+      if(r[0]&&r[1])cycles[r[0]]=parseInt(r[1])||45;
+    });
+    if(shareFlag!==null){CFG={...CFG,shareEnabled:shareFlag};saveCfg(CFG);}
+    set({clients,visits,cycles});
+    toast('✓ 스프레드시트에서 불러왔습니다');
+  },
+};
+
+// ═══════════════════════════════════════════════
+// 5. GOOGLE MAPS
+// ═══════════════════════════════════════════════
+let _gmap=null,_gmarkers=[],_gpsWatcher=null;
+
+function loadMapsScript(){
+  const key=CFG.mapsKey;
+  if(!key||document.getElementById('gmaps-script'))return;
+  const s=document.createElement('script');
+  s.id='gmaps-script';
+  s.src=`https://maps.googleapis.com/maps/api/js?key=${key}&callback=onMapsLoaded&language=ko&region=KR`;
+  s.async=true;s.defer=true;
+  document.head.appendChild(s);
+}
+window.onMapsLoaded=()=>{ if(page==='map') initGMap(); };
+
+function initGMap(){
+  if(!window.google?.maps){
+    document.getElementById('gmap').innerHTML=`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--tx3);font-size:12px;flex-direction:column;gap:8px"><div class="spin"></div>지도 로딩 중...</div>`;
+    return;
+  }
+  const el=document.getElementById('gmap');if(!el)return;
+  const center=gps?{lat:gps.lat,lng:gps.lng}:{lat:37.5665,lng:126.9780};
+  _gmap=new google.maps.Map(el,{
+    center,zoom:15,
+    styles:[{elementType:'geometry',stylers:[{color:'#1d2c3f'}]},
+      {elementType:'labels.text.fill',stylers:[{color:'#8baabf'}]},
+      {elementType:'labels.text.stroke',stylers:[{color:'#1d2c3f'}]},
+      {featureType:'road',elementType:'geometry',stylers:[{color:'#243a52'}]},
+      {featureType:'water',elementType:'geometry',stylers:[{color:'#0d1b2a'}]},
+      {featureType:'poi',stylers:[{visibility:'off'}]}],
+    disableDefaultUI:false,zoomControl:true,mapTypeControl:false,streetViewControl:false,fullscreenControl:false,
+  });
+  if(gps){
+    new google.maps.Marker({position:{lat:gps.lat,lng:gps.lng},map:_gmap,
+      icon:{path:google.maps.SymbolPath.CIRCLE,scale:8,fillColor:'#3B9EFF',fillOpacity:1,strokeColor:'#fff',strokeWeight:2},
+      title:'현재 위치'});
+  }
+  placeMapMarkers();
+}
+
+function placeMapMarkers(){
+  if(!_gmap||!window.google?.maps)return;
+  _gmarkers.forEach(m=>m.setMap(null));_gmarkers=[];
+  const iw=new google.maps.InfoWindow();
+  S.clients.filter(c=>c.lat&&c.lng).forEach(c=>{
+    const u=getU(c);
+    const color=u.cls==='u-r'?'#E05252':u.cls==='u-o'?'#E8923A':u.cls==='u-y'?'#F0C040':'#2ECC71';
+    const m=new google.maps.Marker({
+      position:{lat:c.lat,lng:c.lng},map:_gmap,
+      icon:{path:google.maps.SymbolPath.CIRCLE,scale:9,fillColor:color,fillOpacity:.9,strokeColor:'#fff',strokeWeight:1.5},
+      title:c.companyName+(c.branchName?' '+c.branchName:''),
+    });
+    m.addListener('click',()=>{
+      iw.setContent(`<div style="font-family:'Noto Sans KR',sans-serif;font-size:13px;min-width:140px">
+        <b>${c.companyName}${c.branchName?' '+c.branchName:''}</b><br>
+        <span style="color:#666">${c.category}</span><br>
+        <span style="color:${color};font-weight:700">${u.dd} · ${u.lbl}</span><br>
+        <a href="#" onclick="event.preventDefault();go('detail','${c.id}')" style="color:#3B9EFF">상세 보기</a>
+      </div>`);
+      iw.open(_gmap,m);
+    });
+    _gmarkers.push(m);
+  });
+}
+
+function initDetailMap(c){
+  if(!window.google?.maps||!c.lat)return;
+  setTimeout(()=>{
+    const el=document.getElementById('dmmap');if(!el)return;
+    const m=new google.maps.Map(el,{center:{lat:c.lat,lng:c.lng},zoom:16,
+      styles:[{elementType:'geometry',stylers:[{color:'#1d2c3f'}]},
+        {elementType:'labels.text.fill',stylers:[{color:'#8baabf'}]},
+        {featureType:'road',elementType:'geometry',stylers:[{color:'#243a52'}]},
+        {featureType:'water',elementType:'geometry',stylers:[{color:'#0d1b2a'}]},
+        {featureType:'poi',stylers:[{visibility:'off'}]}],
+      disableDefaultUI:true,zoomControl:true});
+    new google.maps.Marker({position:{lat:c.lat,lng:c.lng},map:m,title:c.companyName});
+  },150);
+}
+
+// ═══════════════════════════════════════════════
+// 6. ROUTER
+// ═══════════════════════════════════════════════
+let page='list',pageParam=null;
+function go(p,param=null){page=p;pageParam=param;window.scrollTo(0,0);render();}
+
+// ═══════════════════════════════════════════════
+// 7. GPS
+// ═══════════════════════════════════════════════
+let gps=null,gpsLoading=false,mapRadius=300;
+
+function reqGPS(){
+  if(!navigator.geolocation){showGpsHelp('unsupported');return;}
+  gpsLoading=true;render();
+
+  // watchPosition으로 여러 번 측정해서 정확도가 가장 좋은 것 사용
+  let bestAccuracy=Infinity, watchId=null, finished=false;
+
+  const finish=(pos)=>{
+    if(finished)return; finished=true;
+    if(watchId!==null) navigator.geolocation.clearWatch(watchId);
+    if(!pos){gpsLoading=false;showGpsHelp('unavailable');render();return;}
+    gps={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:Math.round(pos.coords.accuracy)};
+    gpsLoading=false;render();
+    if(gps.accuracy>500){
+      toast(`⚠ 위치 정확도 ${gps.accuracy}m — 실외에서 다시 시도하세요`);
+    }
+    if(page==='map'&&_gmap){
+      _gmap.panTo({lat:gps.lat,lng:gps.lng});
+      _gmap.setZoom(16);
+      new google.maps.Marker({position:{lat:gps.lat,lng:gps.lng},map:_gmap,
+        icon:{path:google.maps.SymbolPath.CIRCLE,scale:9,fillColor:'#3B9EFF',fillOpacity:1,strokeColor:'#fff',strokeWeight:2},
+        title:`현재 위치 (정확도 ±${gps.accuracy}m)`});
+    }else if(page==='map'){initGMap();}
+  };
+
+  watchId=navigator.geolocation.watchPosition(
+    p=>{
+      // 정확도 50m 미만이면 즉시 종료, 아니면 더 좋은 값 누적
+      if(p.coords.accuracy<50){finish(p);return;}
+      if(p.coords.accuracy<bestAccuracy){
+        bestAccuracy=p.coords.accuracy;
+        gps={lat:p.coords.latitude,lng:p.coords.longitude,accuracy:Math.round(p.coords.accuracy)};
+      }
+    },
+    e=>{
+      if(finished)return; finished=true;
+      gpsLoading=false;render();
+      if(e.code===1) showGpsHelp('denied');
+      else if(e.code===2) showGpsHelp('unavailable');
+      else showGpsHelp('timeout');
+    },
+    {enableHighAccuracy:true,timeout:15000,maximumAge:0}
+  );
+
+  // 8초 후 가장 좋은 결과로 종료
+  setTimeout(()=>{
+    if(finished)return;
+    if(gps&&gps.accuracy<Infinity){
+      navigator.geolocation.getCurrentPosition(p=>finish(p),()=>finish(null),{enableHighAccuracy:true,timeout:5000});
+    }else{
+      navigator.geolocation.getCurrentPosition(p=>finish(p),e=>{
+        finished=true;gpsLoading=false;
+        if(e.code===1)showGpsHelp('denied');else showGpsHelp('timeout');
+        render();
+      },{enableHighAccuracy:true,timeout:8000});
+    }
+  },8000);
+}
+
+function showGpsHelp(reason){
+  const msgs={
+    denied:{
+      title:'위치 권한이 차단됨',
+      icon:'🚫',
+      steps:[
+        '① Chrome 주소창 왼쪽 <b>🔒 자물쇠</b> 아이콘 탭',
+        '② <b>권한 → 위치 → 허용</b> 선택',
+        '③ 페이지 새로고침 후 다시 시도',
+        '<hr style="border-color:var(--bd);margin:8px 0">위 방법이 안 될 경우:',
+        '① Android <b>설정 → 앱 → Chrome</b>',
+        '② <b>권한 → 위치 → 앱 사용 중 허용</b>',
+        '③ Android <b>설정 → 위치</b> 가 켜져 있는지 확인',
+      ]
+    },
+    unavailable:{
+      title:'위치를 파악할 수 없음',
+      icon:'📡',
+      steps:[
+        '• 실내에 있다면 창가로 이동하거나 잠시 후 다시 시도하세요',
+        '• Android 설정 → 위치 → <b>정확도 향상</b> 켜기',
+        '• Wi-Fi 또는 모바일 데이터가 켜져 있는지 확인하세요',
+      ]
+    },
+    timeout:{
+      title:'위치 인식 시간 초과',
+      icon:'⏱',
+      steps:[
+        '• GPS 신호가 약한 환경입니다',
+        '• 실외로 이동 후 다시 시도하세요',
+        '• Android 설정 → 위치 모드를 <b>높은 정확도</b>로 설정하세요',
+      ]
+    },
+    unsupported:{
+      title:'GPS 미지원 기기',
+      icon:'❌',
+      steps:['• 이 기기 또는 브라우저는 위치 기능을 지원하지 않습니다']
+    }
+  };
+  const m=msgs[reason]||msgs.denied;
+
+  // 모달 DOM 직접 삽입
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:999;display:flex;flex-direction:column;justify-content:flex-end';
+  overlay.innerHTML=`
+    <div style="background:#152236;border-radius:22px 22px 0 0;padding:20px 20px 36px;animation:slideUp .22s ease">
+      <div style="width:34px;height:4px;background:rgba(255,255,255,.13);border-radius:2px;margin:0 auto 16px"></div>
+      <div style="font-size:28px;text-align:center;margin-bottom:8px">${m.icon}</div>
+      <div style="font-size:16px;font-weight:700;text-align:center;margin-bottom:14px">${m.title}</div>
+      <div style="font-size:12.5px;color:#8BAABF;line-height:2;padding:12px 14px;background:#1C2E42;border-radius:10px;margin-bottom:16px">
+        ${m.steps.map(s=>`<div>${s}</div>`).join('')}
+      </div>
+      <button onclick="this.closest('div[style*=fixed]').remove()"
+        style="width:100%;padding:12px;background:#3B9EFF;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;font-family:'Noto Sans KR',sans-serif;cursor:pointer">
+        확인
+      </button>
+    </div>`;
+  overlay.addEventListener('click',e=>{ if(e.target===overlay)overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+
+// ═══════════════════════════════════════════════
+// 8. GEOCODING
+// ═══════════════════════════════════════════════
+async function geocodeClient(id){
+  const c=S.clients.find(x=>x.id===id);
+  if(!c?.address){toast('주소 정보가 없습니다');return;}
+
+  // Google Geocoding API 우선, 없으면 Gemini
+  if(CFG.mapsKey&&window.google?.maps){
+    const gc=new google.maps.Geocoder();
+    gc.geocode({address:c.address,region:'KR'},async(res,status)=>{
+      if(status==='OK'&&res[0]){
+        const loc=res[0].geometry.location;
+        set({clients:S.clients.map(x=>x.id===id?{...x,lat:loc.lat(),lng:loc.lng()}:x)});
+        toast('✓ 좌표 등록됨 (Google)');
+        if(page==='map'&&_gmap)placeMapMarkers();
+      }else{
+        try{const{lat,lng}=await Gem.geocode(c.address);
+          set({clients:S.clients.map(x=>x.id===id?{...x,lat,lng}:x)});
+          toast('✓ 좌표 등록됨 (AI)');
+          if(page==='map'&&_gmap)placeMapMarkers();
+        }catch(e){toast('좌표 검색 실패: '+e.message);}
+      }
+    });
+  }else{
+    toast('좌표 검색 중 (AI)...');
+    try{const{lat,lng}=await Gem.geocode(c.address);
+      set({clients:S.clients.map(x=>x.id===id?{...x,lat,lng}:x)});
+      toast('✓ 좌표 등록됨');
+      if(page==='map'&&_gmap)placeMapMarkers();
+    }catch(e){toast('좌표 검색 실패: '+e.message);}
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 9. PAGES
+// ═══════════════════════════════════════════════
+
+/* ── LOGIN ── */
+// 로그인 화면 상태: 'select' | 'member' | 'admin' | 'admin_setup'
+let loginScreen = 'select';
+let lf = { name:'', pw:'', newPw:'', newPw2:'' };
+
+function PageLogin(){
+  const hasCfg = !!(CFG.driveClientId);      // 관리자 설정 완료 여부
+  const hasPw  = !!(CFG.adminPwHash);         // 관리자 비밀번호 설정 여부
+
+  // ── 화면 선택 ──────────────────────────────────────────
+  if(loginScreen==='select') return `
+    <div class="lsc">
+      <div class="llo">🏢</div>
+      <div class="lt">VisitLog</div>
+      <div class="ls">하나감정평가법인<br>거래처 방문 관리 시스템</div>
+      <div style="width:100%;max-width:300px;display:flex;flex-direction:column;gap:12px">
+        <button class="btn bp" onclick="loginScreen='member';lf={name:'',pw:'',newPw:'',newPw2:''};render()">
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+          팀원 로그인
+        </button>
+        <button class="btn bs" onclick="loginScreen='admin';lf={name:'',pw:'',newPw:'',newPw2:''};render()">
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          관리자 로그인
+        </button>
+        ${!hasCfg?`<div style="margin-top:4px;font-size:11px;color:var(--or);text-align:center;line-height:1.6">⚠ 관리자 초기 설정이 필요합니다<br>관리자 로그인 후 설정을 완료해주세요</div>`:''}
+      </div>
+      <div style="font-size:10px;color:var(--tx3);margin-top:28px;text-align:center;line-height:1.8">
+        Powered by Gemini 2.0 Flash · Google Sheets · Google Maps
+      </div>
+    </div>`;
+
+  // ── 팀원 로그인 ─────────────────────────────────────────
+  if(loginScreen==='member') return `
+    <div class="lsc">
+      <div class="llo">👤</div>
+      <div class="lt">팀원 로그인</div>
+      <div class="ls" style="margin-bottom:20px">담당자 이름을 입력하세요</div>
+      <div style="width:100%;max-width:300px">
+        <div class="ig">
+          <label class="il">담당자 이름</label>
+          <input type="text" id="ln" placeholder="예: 홍길동" value="${lf.name}"
+            oninput="lf.name=this.value"
+            onkeydown="if(event.key==='Enter')doMemberLogin()">
+        </div>
+        ${!hasCfg?`<div style="font-size:11px;color:var(--or);padding:8px 10px;background:var(--obg);border-radius:var(--rs);margin-bottom:12px;line-height:1.6">
+          ⚠ 관리자 설정이 아직 완료되지 않았습니다.<br>일부 기능(Drive·지도)이 제한될 수 있습니다.
+        </div>`:''}
+        <button class="btn bp" onclick="doMemberLogin()">시작하기</button>
+        <button class="btn bs mt2" onclick="loginScreen='select';render()">← 뒤로</button>
+      </div>
+    </div>`;
+
+  // ── 관리자 로그인 ────────────────────────────────────────
+  if(loginScreen==='admin') return `
+    <div class="lsc">
+      <div class="llo">⚙️</div>
+      <div class="lt">관리자 로그인</div>
+      <div class="ls" style="margin-bottom:20px">${hasPw?'관리자 비밀번호를 입력하세요':'최초 접속: 비밀번호를 설정합니다'}</div>
+      <div style="width:100%;max-width:300px">
+        ${hasPw ? `
+        <div class="ig">
+          <label class="il">비밀번호</label>
+          <input type="password" id="apw" placeholder="관리자 비밀번호"
+            oninput="lf.pw=this.value"
+            onkeydown="if(event.key==='Enter')doAdminLogin()">
+        </div>
+        <button class="btn bp" onclick="doAdminLogin()">로그인</button>` : `
+        <div style="font-size:11.5px;color:var(--tx2);padding:10px;background:var(--gbg);border-radius:var(--rs);margin-bottom:14px;line-height:1.7">
+          처음 사용 시 관리자 비밀번호를 설정합니다.<br>팀원들에게 공유하지 마세요.
+        </div>
+        <div class="ig">
+          <label class="il">새 비밀번호</label>
+          <input type="password" id="npw1" placeholder="비밀번호 입력" oninput="lf.newPw=this.value">
+        </div>
+        <div class="ig">
+          <label class="il">비밀번호 확인</label>
+          <input type="password" id="npw2" placeholder="비밀번호 재입력" oninput="lf.newPw2=this.value"
+            onkeydown="if(event.key==='Enter')doSetAdminPw()">
+        </div>
+        <button class="btn bp" onclick="doSetAdminPw()">비밀번호 설정</button>`}
+        <button class="btn bs mt2" onclick="loginScreen='select';render()">← 뒤로</button>
+      </div>
+    </div>`;
+
+  return '';
+}
+
+function doMemberLogin(){
+  const name=document.getElementById('ln')?.value?.trim();
+  if(!name){toast('담당자 이름을 입력하세요');return;}
+  set({user:{name,role:'member',spreadsheetId:S.user?.spreadsheetId||null}});
+  if(CFG.mapsKey)loadMapsScript();
+  go('list');
+}
+
+async function doAdminLogin(){
+  const pw=document.getElementById('apw')?.value||'';
+  if(!pw){toast('비밀번호를 입력하세요');return;}
+  const hash=await sha256(pw);
+  if(hash!==CFG.adminPwHash){toast('비밀번호가 틀렸습니다');return;}
+  set({user:{name:'관리자',role:'admin',spreadsheetId:S.user?.spreadsheetId||null}});
+  if(CFG.mapsKey)loadMapsScript();
+  go('settings');
+  setTimeout(()=>toast('✓ 관리자로 로그인됐습니다'),200);
+}
+
+async function doSetAdminPw(){
+  const pw=document.getElementById('npw1')?.value||'';
+  const pw2=document.getElementById('npw2')?.value||'';
+  if(!pw||pw.length<4){toast('비밀번호는 4자 이상이어야 합니다');return;}
+  if(pw!==pw2){toast('비밀번호가 일치하지 않습니다');return;}
+  const hash=await sha256(pw);
+  CFG={...CFG,adminPwHash:hash};
+  saveCfg(CFG);
+  set({user:{name:'관리자',role:'admin',spreadsheetId:null}});
+  go('settings');
+  setTimeout(()=>toast('✓ 비밀번호 설정 완료. 이제 API 키를 설정해주세요'),200);
+}
+
+/* ── LIST ── */
+let srchQ='',fCat='전체',fU='전체',fOwner='전체';
+function PageList(){
+  const me = S.user?.name||'';
+  const isAdmin = S.user?.role==='admin';
+  const allWithU = [...S.clients].map(c=>({...c,u:getU(c)}));
+
+  // 본인 거래처 판별: ownerName이 자신과 일치 (혹은 _shared 플래그)
+  const isMine = c => !c._shared && (c.ownerName===me || (!c.ownerName && isAdmin));
+
+  const sorted = allWithU
+    .filter(c=>{
+      if(srchQ){
+        const q=srchQ;
+        const hit=c.companyName.includes(q)||
+          (c.branchName||'').includes(q)||
+          (c.contactName||'').includes(q);
+        if(!hit)return false;
+      }
+      if(fCat!=='전체'&&c.category!==fCat)return false;
+      if(fU==='위험'&&c.u.pct<91)return false;
+      if(fU==='주의'&&(c.u.pct<71||c.u.pct>=91))return false;
+      if(fU==='양호'&&c.u.pct>=71)return false;
+      if(fOwner==='내 거래처'&&!isMine(c))return false;
+      if(fOwner==='공유됨'&&isMine(c))return false;
+      return true;
+    }).sort((a,b)=>b.u.pct-a.u.pct);
+
+  const redCnt=S.clients.filter(c=>getU(c).pct>=91).length;
+  const myCnt=S.clients.filter(isMine).length;
+  const sharedCnt=S.clients.filter(c=>!isMine(c)).length;
+  const urgent=sorted.filter(c=>c.u.pct>=71),normal=sorted.filter(c=>c.u.pct<71);
+
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div>
+        <div class="hdr-t">거래처 목록</div>
+        <div class="hdr-s">${me} · 총 ${S.clients.length}개${sharedCnt?` (공유 ${sharedCnt})`:''}</div>
+      </div>
+      <div class="row g2">
+        ${redCnt?`<span class="badge br">${redCnt}곳 위험</span>`:''}
+        <button class="btn bs bsm" onclick="go('import')" title="엑셀/CSV 업로드">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          업로드
+        </button>
+        <button class="btn bp bsm" onclick="go('scan')">
+          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          명함 등록
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="page">
+    <div class="sw"><div class="si">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4" stroke-linecap="round"/></svg>
+      <input type="text" placeholder="거래처명, 담당자 검색..." value="${srchQ}" oninput="srchQ=this.value;render()">
+    </div></div>
+
+    <!-- 소유자 필터 -->
+    <div class="chips" style="padding-bottom:2px">
+      <div class="chip ${fOwner==='전체'?'on':''}" onclick="fOwner='전체';render()">전체 (${S.clients.length})</div>
+      <div class="chip ${fOwner==='내 거래처'?'on':''}" onclick="fOwner='내 거래처';render()">내 거래처 (${myCnt})</div>
+      ${sharedCnt?`<div class="chip ${fOwner==='공유됨'?'on':''}" onclick="fOwner='공유됨';render()">공유됨 (${sharedCnt})</div>`:''}
+    </div>
+    <!-- 카테고리 필터 -->
+    <div class="chips" style="padding-top:2px;padding-bottom:2px">
+      ${['전체',...CATEGORIES].map(c=>`<div class="chip ${fCat===c?'on':''}" onclick="fCat='${c}';render()">${c}</div>`).join('')}
+    </div>
+    <!-- 위험도 필터 -->
+    <div class="chips" style="padding-top:2px">
+      ${['전체','위험','주의','양호'].map(u=>`<div class="chip ${fU===u?'on':''}" onclick="fU='${u}';render()">${u}</div>`).join('')}
+    </div>
+
+    ${!sorted.length?`<div class="empty">
+      <svg width="44" height="44" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.2" color="var(--tx3)"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 0 2-2h2a2 2 0 0 0 2 2"/></svg>
+      <h3>거래처가 없습니다</h3>
+      <p>엑셀 업로드 또는 명함 촬영으로<br>거래처를 추가하세요</p>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:14px">
+        <button class="btn bs bsm" onclick="go('import')">엑셀 업로드</button>
+        <button class="btn bp bsm" onclick="go('scan')">명함 등록</button>
+      </div>
+    </div>`:''}
+
+    ${urgent.length?`<div class="slbl">요주의 거래처</div>${urgent.map(ccH).join('')}`:''}
+    ${normal.length?`<div class="slbl">양호 거래처</div>${normal.map(ccH).join('')}`:''}
+  </div>`;
+}
+function ccH(c){
+  const me=S.user?.name||'';
+  const isShared= c._shared===true || (c.ownerName && c.ownerName!==me);
+  return`<div class="card cc ${c.u.cls}" onclick="go('detail','${c.id}')">
+  <div class="cs"></div>
+  <div class="cb">
+    <div class="cn">${c.companyName}${c.branchName?' '+c.branchName:''}${isShared?` <span style="font-size:9px;background:rgba(78,205,196,.15);color:var(--teal);padding:1px 5px;border-radius:4px;vertical-align:middle">공유</span>`:''}${c._dup?` <span style="font-size:9px;background:var(--obg);color:var(--or);padding:1px 5px;border-radius:4px;vertical-align:middle">중복주의</span>`:''}</div>
+    <div class="cm">${c.category}${c.contactName?' · '+c.contactName:''}${isShared&&c.ownerName?' · 📋'+c.ownerName:''}</div>
+  </div>
+  <div class="cr"><span class="dd">${c.u.dd}</span><span style="font-size:10px;color:var(--tx3)">${c.u.lbl}</span></div>
+</div>`;}
+
+
+/* ── DETAIL ── */
+function PageDetail(){
+  const c=S.clients.find(x=>x.id===pageParam);if(!c){go('list');return'';}
+  const u=getU(c),visits=S.visits.filter(v=>v.clientId===c.id).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const cycle=S.cycles[c.category]||45;
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div class="row g2">
+        <button onclick="go('list')" style="background:none;border:none;color:var(--tx2);cursor:pointer;padding:4px">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
+        </button>
+        <div><div class="hdr-t" style="font-size:16px">${c.companyName}</div><div class="hdr-s">${c.branchName||c.category}</div></div>
+      </div>
+      <button class="btn bp bsm" onclick="go('visit','${c.id}')">방문 기록</button>
+    </div>
+  </div>
+  <div class="page">
+    <div style="padding:12px 14px 0">
+      <div class="card" style="margin:0 0 10px">
+        <div class="row jb" style="margin-bottom:9px">
+          <span style="font-size:22px;font-weight:700;font-family:var(--mo);color:var(--uc,#2ECC71)">${u.dd}</span>
+          <span class="badge ${u.cls==='u-r'?'br':u.cls==='u-o'?'bo':'bg2'}">${u.lbl}</span>
+        </div>
+        <div class="pb"><div class="pbi" style="width:${Math.min(u.pct,100)}%;background:${u.bar}"></div></div>
+        <div class="row jb" style="margin-top:5px;font-size:10px;color:var(--tx3)"><span>${u.pct>=999?'미방문':u.pct+'% 경과'}</span><span>주기 ${cycle}일</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="fr"><span class="fl">카테고리</span><span class="fv">${c.category}</span></div>
+      <div class="fr"><span class="fl">지점/부서</span>
+        <span class="fv">${c.branchName||'<span style="color:var(--tx3)">미입력</span>'}
+          <button class="btn bs bsm" style="margin-top:4px;font-size:10px" onclick="editField('${c.id}','branchName','지점/부서명')">수정</button>
+        </span>
+      </div>
+      <div class="fr"><span class="fl">주소</span>
+        <span class="fv">${c.address||'<span style="color:var(--tx3)">미입력</span>'}
+          <div class="row g2" style="margin-top:4px;flex-wrap:wrap">
+            <button class="btn bs bsm" style="font-size:10px" onclick="editField('${c.id}','address','주소')">직접 입력</button>
+            ${!c.lat&&c.address?`<button class="btn bs bsm" style="font-size:10px" onclick="geocodeClient('${c.id}')">좌표 검색</button>`:''}
+          </div>
+        </span>
+      </div>
+      <div class="fr"><span class="fl">담당자</span>
+        <span class="fv">${c.contactName||'<span style="color:var(--tx3)">미입력</span>'}
+          <button class="btn bs bsm" style="margin-top:4px;font-size:10px" onclick="editField('${c.id}','contactName','담당자명')">수정</button>
+        </span>
+      </div>
+      <div class="fr"><span class="fl">연락처</span>
+        <span class="fv">${c.contactPhone?`<a href="tel:${c.contactPhone}" style="color:var(--ac);text-decoration:none">${c.contactPhone}</a>`:'<span style="color:var(--tx3)">미입력</span>'}
+          <button class="btn bs bsm" style="margin-top:4px;font-size:10px" onclick="editField('${c.id}','contactPhone','연락처')">수정</button>
+        </span>
+      </div>
+      <div class="fr"><span class="fl">최근방문</span><span class="fv">${c.lastVisitDate||'미방문'}</span></div>
+      ${c.lat?`<div class="fr"><span class="fl">좌표</span><span class="fv" style="font-family:var(--mo);font-size:11px">${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}</span></div>`:''}
+    </div>
+    ${c.lat&&CFG.mapsKey?`<div id="dmmap"></div>`:''}
+    <div class="slbl">방문 이력 (${visits.length}회)</div>
+    ${visits.length?visits.map(v=>`
+    <div class="hi" style="cursor:default">
+      <div class="hd" style="background:${v.type==='신규 개척'?'var(--red)':v.type==='기존 거래처 관리'?'var(--gn)':'var(--ac)'}"></div>
+      <div class="hb">
+        <div class="row jb"><div class="ht">${v.type}</div><span style="font-size:10px;color:var(--tx3);font-family:var(--mo)">${v.date}</span></div>
+        ${v.memo?`<div class="hme">${v.memo}</div>`:''}
+        ${v.nextVisit?`<div style="font-size:11px;color:var(--ac);margin-top:4px">다음 예정: ${v.nextVisit}</div>`:''}
+      </div>
+    </div>`).join(''):`<div style="text-align:center;padding:22px;font-size:12px;color:var(--tx3)">방문 이력 없음</div>`}
+    <div style="padding:14px"><button class="btn bd2 bsm" onclick="delClient('${c.id}')">거래처 삭제</button></div>
+  </div>`;
+}
+
+function editField(clientId, field, label){
+  const c=S.clients.find(x=>x.id===clientId);if(!c)return;
+  const cur=c[field]||'';
+  const val=prompt(label+' 입력:',cur);
+  if(val===null)return;
+  set({clients:S.clients.map(x=>x.id===clientId?{...x,[field]:val.trim()}:x)});
+  toast('✓ '+label+' 수정됨');
+}
+function delClient(id){
+  if(!confirm('삭제하시겠습니까?'))return;
+  set({clients:S.clients.filter(c=>c.id!==id),visits:S.visits.filter(v=>v.clientId!==id)});
+  go('list');toast('삭제됐습니다');
+}
+
+/* ── VISIT ── */
+let vf={type:'단순 방문',memo:'',nextVisit:''};
+function PageVisit(){
+  const c=S.clients.find(x=>x.id===pageParam);if(!c){go('list');return'';}
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div class="row g2">
+        <button onclick="go('detail','${c.id}')" style="background:none;border:none;color:var(--tx2);cursor:pointer;padding:4px">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
+        </button>
+        <div><div class="hdr-t" style="font-size:16px">방문 기록</div>
+        <div class="hdr-s">${c.companyName}${c.branchName?' '+c.branchName:''}</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="page">
+    <div class="card" style="margin-top:12px">
+      <div style="font-size:12px;color:var(--tx2);margin-bottom:12px">
+        방문일: <span style="color:var(--tx);font-family:var(--mo)">${new Date().toLocaleDateString('ko-KR')}</span>
+        &nbsp;·&nbsp;담당: <span style="color:var(--tx)">${S.user?.name||'-'}</span>
+      </div>
+      <div class="il">방문 유형</div>
+      <div class="tg">${VISIT_TYPES.map(t=>`<div class="tb ${vf.type===t?'on':''}" onclick="vf.type='${t}';render()">${t}</div>`).join('')}</div>
+      <div class="ig"><label class="il">메모 (선택)</label>
+        <textarea placeholder="방문 내용..." oninput="vf.memo=this.value">${vf.memo}</textarea></div>
+      <div class="ig"><label class="il">다음 방문 예정일</label>
+        <input type="date" value="${vf.nextVisit}" oninput="vf.nextVisit=this.value"></div>
+      <button class="btn bp" onclick="saveVisit('${c.id}')">
+        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7" stroke-linecap="round"/></svg>
+        방문 기록 저장
+      </button>
+    </div>
+  </div>`;
+}
+async function saveVisit(cid){
+  const v={id:uid(),clientId:cid,type:vf.type,memo:vf.memo,nextVisit:vf.nextVisit,
+    date:new Date().toISOString().slice(0,10),createdAt:new Date().toISOString()};
+  const clients=S.clients.map(c=>c.id===cid?{...c,lastVisitDate:v.date}:c);
+  set({clients,visits:[...S.visits,v]});
+  vf={type:'단순 방문',memo:'',nextVisit:''};
+  if(S.drive.connected){try{await GSheets.syncAll();toast('✓ 저장 + Sheets 동기화');}catch{toast('✓ 로컬 저장됨 (Sheets 오류)');}}
+  else toast('✓ 방문 기록 저장됨');
+  go('detail',cid);
+}
+
+/* ── MAP ── */
+function PageMap(){
+  const nearby=gps?S.clients.filter(c=>c.lat&&c.lng&&hav(gps.lat,gps.lng,c.lat,c.lng)<=mapRadius)
+    .map(c=>({...c,dist:hav(gps.lat,gps.lng,c.lat,c.lng),u:getU(c)})).sort((a,b)=>a.dist-b.dist):[];
+  const noCoord=S.clients.filter(c=>!c.lat);
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div><div class="hdr-t">지도</div><div class="hdr-s">Google Maps · 거래처 현황</div></div>
+      <button class="btn bs bsm" onclick="reqGPS()" style="min-width:80px">
+        ${gpsLoading?'<div class="spin"></div>':'📍 위치 인식'}</button>
+    </div>
+  </div>
+  <div class="page">
+    ${gps?`<div class="gpb"><div class="gpd"></div><span>${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E${gps.accuracy?` · 정확도 ±${gps.accuracy}m`:''}</span></div>`:''}
+    ${CFG.mapsKey?'':'<div style="padding:8px 14px;font-size:11px;color:var(--tx3);background:var(--rbg);border-bottom:1px solid var(--bd)">⚠ Maps API 키 미설정 — 설정에서 입력하면 Google Maps가 표시됩니다</div>'}
+    <div id="gmap" style="display:${CFG.mapsKey?'block':'none'}"></div>
+
+    <div class="card" style="margin-top:0;margin-bottom:10px">
+      <div class="il">표시 반경</div>
+      <div class="row g2">
+        <input type="range" min="100" max="3000" step="100" value="${mapRadius}"
+          oninput="mapRadius=parseInt(this.value);render()" style="flex:1">
+        <span style="font-family:var(--mo);font-size:13px;min-width:55px;text-align:right;color:var(--ac)">${mapRadius}m</span>
+      </div>
+    </div>
+
+    <div class="slbl">근처 거래처 ${gps?`(${nearby.length}곳 / 반경 ${mapRadius}m)`:''}</div>
+    ${!gps?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">📍 위치 인식 버튼을 눌러주세요</div>`:''}
+    ${gps&&!nearby.length?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">주변에 좌표가 등록된 거래처가 없습니다</div>`:''}
+    ${nearby.map(c=>`
+    <div class="card cc ${c.u.cls}" onclick="go('detail','${c.id}')">
+      <div class="cs"></div>
+      <div class="cb"><div class="cn">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
+        <div class="cm">${c.dist}m · ${c.u.dd}</div></div>
+      <button class="btn bp bsm" onclick="event.stopPropagation();go('visit','${c.id}')">방문</button>
+    </div>`).join('')}
+
+    ${noCoord.length?`
+    <div class="slbl">좌표 미등록 거래처 (${noCoord.length}곳)</div>
+    ${noCoord.slice(0,6).map(c=>`
+    <div class="card row jb" style="padding:10px 14px">
+      <div style="font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
+      <button class="btn bs bsm" style="margin-left:8px;flex-shrink:0" onclick="geocodeClient('${c.id}')">좌표 검색</button>
+    </div>`).join('')}
+    ${noCoord.length>6?`<div style="text-align:center;padding:8px;font-size:11px;color:var(--tx3)">${noCoord.length-6}개 더 있음</div>`:''}
+    <div style="padding:0 14px 10px">
+      <button class="btn bs bsm" style="width:auto" onclick="doBatchGeo()">전체 일괄 좌표 검색</button>
+    </div>`:''}
+  </div>`;
+}
+
+/* ── HISTORY ── */
+let histF='전체';
+function PageHistory(){
+  const all=[...S.visits].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const filtered=histF==='전체'?all:all.filter(v=>v.type===histF);
+  const groups={};filtered.forEach(v=>{const k=v.date.slice(0,7);(groups[k]||(groups[k]=[])).push(v);});
+  const tc=VISIT_TYPES.reduce((a,t)=>{a[t]=S.visits.filter(v=>v.type===t).length;return a},{});
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div><div class="hdr-t">방문 히스토리</div><div class="hdr-s">총 ${S.visits.length}건</div></div>
+    </div>
+  </div>
+  <div class="page">
+    <div class="sr">
+      <div class="sc"><div class="sn" style="color:var(--ac)">${S.visits.length}</div><div class="sl">총 방문</div></div>
+      <div class="sc"><div class="sn" style="color:var(--red)">${S.clients.filter(c=>getU(c).pct>=91).length}</div><div class="sl">위험 거래처</div></div>
+    </div>
+    <div class="chips"><div class="chip ${histF==='전체'?'on':''}" onclick="histF='전체';render()">전체</div>
+      ${VISIT_TYPES.map(t=>`<div class="chip ${histF===t?'on':''}" onclick="histF='${t}';render()">${t} (${tc[t]||0})</div>`).join('')}</div>
+    ${!Object.keys(groups).length?`<div class="empty">
+      <svg width="44" height="44" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.2" color="var(--tx3)"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+      <h3>방문 기록 없음</h3><p>거래처를 방문하고 기록을 남겨보세요</p></div>`:''}
+    ${Object.entries(groups).map(([ym,vs])=>`
+    <div class="slbl">${ym.replace('-','년 ')}월</div>
+    ${vs.map(v=>{const c=S.clients.find(x=>x.id===v.clientId);return`
+    <div class="hi" onclick="${c?`go('detail','${v.clientId}')`:''}" style="${c?'':'cursor:default'}">
+      <div class="hd" style="background:${v.type==='신규 개척'?'var(--red)':v.type==='기존 거래처 관리'?'var(--gn)':'var(--ac)'}"></div>
+      <div class="hb">
+        <div class="row jb">
+          <div class="ht">${c?c.companyName+(c.branchName?' '+c.branchName:''):'(삭제됨)'}</div>
+          <span style="font-size:10px;color:var(--tx3);font-family:var(--mo)">${v.date}</span>
+        </div>
+        <div class="hm">${v.type}</div>
+        ${v.memo?`<div class="hme">${v.memo}</div>`:''}
+      </div>
+    </div>`;}).join('')}`).join('')}
+  </div>`;
+}
+
+/* ── IMPORT PAGE (엑셀/CSV 업로드 전용) ── */
+let importState = { rows:null, parsed:null, preview:null, importing:false, progress:'' };
+
+function PageImport(){
+  const s = importState;
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div class="row g2">
+        <button onclick="go('list')" style="background:none;border:none;color:var(--tx2);cursor:pointer;padding:4px">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
+        </button>
+        <div><div class="hdr-t" style="font-size:16px">거래처 목록 업로드</div>
+          <div class="hdr-s">Excel / CSV → Drive 자동 저장</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="page" style="padding-top:12px">
+
+    <!-- 업로드 방법 안내 -->
+    <div class="card" style="margin-top:0">
+      <div style="font-size:12px;font-weight:600;color:var(--tx);margin-bottom:8px">📋 엑셀 헤더 형식</div>
+      <div style="font-family:var(--mo);font-size:10px;color:var(--ac);background:var(--bg3);padding:8px 10px;border-radius:var(--rs);line-height:1.9;overflow-x:auto;white-space:nowrap">
+        회사명 | 지점명 | 담당자 | 연락처
+      </div>
+      <div style="font-size:10.5px;color:var(--tx3);margin-top:8px;line-height:1.7">
+        • 없으면 현재 로그인한 담당자(${S.user?.name||'나'})의 시트에 저장<br>
+        • 중복 거래처(85% 이상 유사)는 자동 제외<br>
+        • 카테고리 미기재 시 회사명으로 자동 분류
+      </div>
+    </div>
+
+    <!-- 파일 선택 / 미리보기 -->
+    ${(()=>{
+      if(!s.parsed){
+        return `<div class="uz" id="dropZone"
+          onclick="document.getElementById('imp2').click()"
+          ondragover="event.preventDefault();this.classList.add('drag')"
+          ondragleave="this.classList.remove('drag')"
+          ondrop="event.preventDefault();this.classList.remove('drag');handleDrop(event)">
+          <svg width="36" height="36" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.2" color="var(--tx3)">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/>
+          </svg>
+          <p>파일을 여기에 끌어다 놓거나 탭하세요</p>
+          <span>.xlsx · .xls · .csv 지원</span>
+          <input type="file" id="imp2" accept=".xlsx,.xls,.csv" style="display:none" onchange="onImportFile(this)">
+        </div>`;
+      }
+      const dups=s.parsed.filter(c=>S.clients.some(x=>sim(x.companyName,c.companyName)>0.85));
+      const fresh=s.parsed.filter(c=>!S.clients.some(x=>sim(x.companyName,c.companyName)>0.85));
+      const hdrInfo=s._headerRow&&s._headerRow.length
+        ? `<div style="margin:0 14px 8px;font-size:10.5px;color:var(--tx3)">인식 헤더(${(s._headerIdx||0)+1}행): <span style="color:var(--ac);font-family:var(--mo)">${s._headerRow.filter(h=>h).slice(0,6).join(' | ')}</span></div>`:'';
+      if(!s.parsed.length){
+        return hdrInfo+`<div style="margin:0 14px 12px;padding:12px;background:var(--rbg);border:1px solid rgba(224,82,82,.3);border-radius:var(--rs)">
+          <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:6px">⚠ 거래처를 인식하지 못했습니다</div>
+          <div style="font-size:11px;color:var(--tx2);line-height:1.8">
+            필요 헤더: <span style="font-family:var(--mo);color:var(--ac)">회사명 / 거래처명 / 의뢰처 / 금융기관명</span><br>
+            현재 파일: <span style="font-family:var(--mo);color:var(--or)">${(s._headerRow||[]).filter(h=>h).slice(0,8).join(' | ')||'인식불가'}</span>
+          </div>
+        </div>
+        <button class="btn bs" style="margin:0 14px;width:calc(100% - 28px)" onclick="importState={rows:null,parsed:null,preview:null,importing:false,progress:''};render()">다른 파일 선택</button>`;
+      }
+      const tableRows=s.parsed.slice(0,8).map(c=>{
+        const isDup=S.clients.some(x=>sim(x.companyName,c.companyName)>0.85);
+        return '<tr style="border-top:1px solid var(--bd)">'
+          +'<td style="padding:6px 8px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+c.companyName+(c.branchName?' '+c.branchName:'')+'</td>'
+          +'<td style="padding:6px 8px;white-space:nowrap;color:var(--tx2);font-size:10px">'+c.category+'</td>'
+          +'<td style="padding:6px 8px">'+(isDup?'<span style="color:var(--or)">⚠중복</span>':'<span style="color:var(--gn)">✓</span>')+'</td>'
+          +'</tr>';
+      }).join('');
+      const moreRow=s.parsed.length>8?'<tr><td colspan="3" style="padding:6px 8px;text-align:center;color:var(--tx3)">외 '+(s.parsed.length-8)+'개...</td></tr>':'';
+      return `<div class="slbl">미리보기 (${s.parsed.length}개 인식됨)</div>`
+        +hdrInfo
+        +`<div style="overflow-x:auto;margin:0 14px 10px">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;background:var(--sf);border-radius:var(--rs);overflow:hidden">
+            <thead><tr style="background:var(--bg4)">${['회사명','카테고리','중복'].map(h=>'<th style="padding:7px 8px;text-align:left;color:var(--tx2);font-weight:600;white-space:nowrap">'+h+'</th>').join('')}</tr></thead>
+            <tbody>${tableRows}${moreRow}</tbody>
+          </table>
+        </div>
+        <div class="card" style="margin-top:0">
+          <div class="row jb" style="margin-bottom:10px">
+            <span style="font-size:13px">신규: <b style="color:var(--gn)">${fresh.length}개</b></span>
+            <span style="font-size:13px">중복 제외: <b style="color:var(--or)">${dups.length}개</b></span>
+          </div>
+          ${s.importing
+            ? '<div class="row g2" style="justify-content:center;padding:10px"><div class="spin"></div><span style="font-size:12px;color:var(--tx2)">'+(s.progress||'가져오는 중...')+'</span></div>'
+            : '<button class="btn bp" onclick="doImportConfirm()"><svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7" stroke-linecap="round"/></svg>'+fresh.length+'개 거래처 가져오기</button>'
+          }
+          <button class="btn bs mt2" onclick="importState={rows:null,parsed:null,preview:null,importing:false,progress:''};render()">다른 파일 선택</button>
+        </div>`;
+    })()}
+
+    <!-- 공유된 거래처 가져오기 -->
+    <div class="divider" style="margin-top:16px"></div>
+    <div class="slbl">팀원 거래처 공유 가져오기</div>
+    <div class="card" style="margin-top:0">
+      <div style="font-size:11.5px;color:var(--tx2);margin-bottom:10px;line-height:1.7">
+        다른 팀원의 Sheets에서 거래처를 가져와 공유 목록에 추가합니다.<br>
+        중복 거래처는 자동으로 "중복주의" 표시됩니다.
+      </div>
+      <div class="ig">
+        <label class="il">팀원 이름 (정확히 입력)</label>
+        <input type="text" id="share_name" placeholder="예: 김철수">
+      </div>
+      <button class="btn bs bsm" style="width:auto" onclick="doImportShared()">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+        팀원 거래처 불러오기
+      </button>
+      <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.6">
+        Drive 연결 상태에서만 사용 가능 · 불러온 거래처는 "공유" 태그로 표시
+      </div>
+    </div>
+
+  </div>`;
+}
+
+function handleDrop(e){
+  const file=e.dataTransfer?.files?.[0];
+  if(!file)return;
+  // 가상 input으로 전달
+  const dt=new DataTransfer();
+  dt.items.add(file);
+  const inp=document.getElementById('imp2');
+  if(inp){inp.files=dt.files;onImportFile(inp);}
+}
+
+function onImportFile(input){
+  const f=input.files[0];if(!f)return;
+  const ext=f.name.split('.').pop().toLowerCase();
+  const r=new FileReader();
+
+  function processRows(rows){
+    // 빈 행 제거
+    const cleaned=rows.filter(row=>row.some(cell=>cell!=null&&String(cell).trim()!==''));
+    const parsed=parseRows(cleaned);
+
+    // 헤더 감지 결과 디버그용
+    let headerRowIdx=0;
+    for(let i=0;i<Math.min(cleaned.length,5);i++){
+      const MAP_KEYS=['회사명','업체명','거래처명','거래처','기관명','의뢰처','의뢰기관','금융기관','금융기관명',
+        '지점명','지점','의뢰부서','담당자','의뢰담당','전화','연락처','주소','소재지',
+        '카테고리','분류','업무구분','담당직원','팀','접수일자','발송일자'];
+      const row=cleaned[i];
+      const matched=row.filter(h=>MAP_KEYS.includes(String(h||'').trim()));
+      if(matched.length>=2){headerRowIdx=i;break;}
+    }
+    const detectedHeaders=cleaned[headerRowIdx]||[];
+
+    importState={...importState,rows:cleaned,parsed,importing:false,progress:'',
+      _headerRow:detectedHeaders,_headerIdx:headerRowIdx};
+    render();
+  }
+
+  if(ext==='csv'){
+    r.onload=e=>{
+      // EUC-KR 인코딩 대응
+      let text=e.target.result;
+      const rows=text.split('\n').map(l=>l.split(',').map(c=>c.replace(/^"|"$/g,'').trim()));
+      processRows(rows);
+    };
+    r.readAsText(f,'utf-8');
+  }else{
+    r.onload=e=>{
+      const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array',codepage:949});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      processRows(rows);
+    };
+    r.readAsArrayBuffer(f);
+  }
+}
+
+async function doImportConfirm(){
+  const fresh=importState.parsed.filter(c=>!S.clients.some(x=>sim(x.companyName,c.companyName)>0.85));
+  if(!fresh.length){toast('추가할 신규 거래처가 없습니다');return;}
+
+  importState={...importState,importing:true,progress:'데이터 저장 중...'};render();
+  set({clients:[...S.clients,...fresh]},true);
+  save(S);
+
+  if(S.drive.connected){
+    try{
+      importState.progress='Drive에 동기화 중...';render();
+      await GSheets.syncAll(p=>{importState.progress=p;render();});
+      importState={rows:null,parsed:null,preview:null,importing:false,progress:''};
+      toast(`✓ ${fresh.length}개 거래처 추가 및 Sheets 저장 완료`);
+    }catch(e){
+      importState={rows:null,parsed:null,preview:null,importing:false,progress:''};
+      toast(`✓ ${fresh.length}개 추가됨 (Sheets 오류: ${e.message})`);
+    }
+  }else{
+    importState={rows:null,parsed:null,preview:null,importing:false,progress:''};
+    toast(`✓ ${fresh.length}개 거래처 추가됨`);
+  }
+  go('list');
+}
+
+async function doImportShared(){
+  const name=document.getElementById('share_name')?.value?.trim();
+  if(!name){toast('팀원 이름을 입력하세요');return;}
+  if(!S.drive.connected){toast('먼저 Drive를 연결해주세요');return;}
+  toast(`${name}의 거래처 불러오는 중...`);
+  try{
+    const ssId=await GSheets.getOrCreateSheet(name);
+    // 공유 허용 여부 먼저 체크 (방문주기 시트 첫 행에 SHARE_ENABLED 플래그 저장)
+    const cycRows=await GSheets.readSheet(ssId,'방문주기!A1:B20');
+    const shareRow=cycRows.find(r=>r[0]==='_SHARE_ENABLED');
+    const shareEnabled=shareRow?shareRow[1]==='true':false;
+    if(!shareEnabled){
+      toast(`❌ ${name}님이 거래처 공유를 허용하지 않았습니다`);
+      return;
+    }
+    const rows=await GSheets.readSheet(ssId,'거래처목록!A2:L');
+    if(!rows.length){toast(`${name}의 거래처 목록이 비어있습니다`);return;}
+    const shared=rows.map(r=>({
+      id:uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
+      address:r[4]||'',contactName:r[5]||'',contactPhone:r[6]||'',
+      ownerName:name,  // 공유받은 거래처는 원래 주인 표시
+      lastVisitDate:r[8]||null,lat:r[9]?parseFloat(r[9]):null,lng:r[10]?parseFloat(r[10]):null,
+      createdAt:new Date().toISOString(),
+      _shared:true, _sharedFrom:name,
+    })).filter(c=>c.companyName);
+
+    // 중복 감지 (내 거래처 중 동명 거래처)
+    const me=S.user?.name||'';
+    const withDup=shared.map(c=>({
+      ...c,
+      _dup: S.clients.some(x=>!x._shared&&x.ownerName===me&&sim(x.companyName,c.companyName)>0.75)
+    }));
+
+    const existing=S.clients.filter(c=>!(c._sharedFrom===name));
+    set({clients:[...existing,...withDup]});
+    toast(`✓ ${name}의 거래처 ${withDup.length}개 공유됨 (중복 ${withDup.filter(c=>c._dup).length}개)`);
+  }catch(e){toast('오류: '+e.message);}
+}
+
+/* ── TEAM PAGE (팀원 현황) ── */
+function PageTeam(){
+  const me=S.user?.name||'';
+  // 담당자별 집계
+  const assignees=[...new Set(S.clients.map(c=>c.ownerName||me))].sort();
+
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div class="row g2">
+        <button onclick="go('list')" style="background:none;border:none;color:var(--tx2);cursor:pointer;padding:4px">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
+        </button>
+        <div><div class="hdr-t" style="font-size:16px">팀원 현황</div>
+          <div class="hdr-s">담당자별 거래처 · 방문 통계</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="page">
+
+    <!-- 전체 요약 -->
+    <div class="sr">
+      <div class="sc"><div class="sn" style="color:var(--ac)">${assignees.length}</div><div class="sl">담당자 수</div></div>
+      <div class="sc"><div class="sn" style="color:var(--red)">${S.clients.filter(c=>getU(c).pct>=91).length}</div><div class="sl">위험 거래처</div></div>
+    </div>
+    <div class="sr" style="padding-top:0">
+      <div class="sc"><div class="sn" style="color:var(--gn)">${S.clients.length}</div><div class="sl">전체 거래처</div></div>
+      <div class="sc"><div class="sn" style="color:var(--teal)">${S.visits.length}</div><div class="sl">총 방문 기록</div></div>
+    </div>
+
+    <div class="slbl">담당자별 현황</div>
+
+    ${assignees.map(a=>{
+      const myC=S.clients.filter(c=>(c.ownerName||me)===a);
+      const myV=S.visits.filter(v=>myC.some(c=>c.id===v.clientId));
+      const redC=myC.filter(c=>getU(c).pct>=111).length;
+      const orC =myC.filter(c=>{ const p=getU(c).pct; return p>=91&&p<111; }).length;
+      const grnC=myC.filter(c=>getU(c).pct<71).length;
+      const isMine=a===me;
+
+      // 이번달 방문수
+      const thisMonth=new Date().toISOString().slice(0,7);
+      const mthV=myV.filter(v=>v.date.startsWith(thisMonth)).length;
+
+      return`<div class="card" style="margin-bottom:10px">
+        <div class="row jb" style="margin-bottom:10px">
+          <div class="row g2">
+            <div style="width:34px;height:34px;border-radius:50%;background:${isMine?'var(--ac)':'var(--bg4)'};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0">${a.slice(0,1)}</div>
+            <div>
+              <div style="font-size:14px;font-weight:600">${a}${isMine?' <span style="font-size:10px;color:var(--ac)">(나)</span>':''}</div>
+              <div style="font-size:11px;color:var(--tx3)">거래처 ${myC.length}개 · 이번달 ${mthV}회 방문</div>
+            </div>
+          </div>
+          ${!isMine?`<button class="btn bs bsm" onclick="doViewTeamMember('${a}')">목록 보기</button>`:''}
+        </div>
+
+        <!-- 위험도 바 -->
+        <div style="display:flex;height:6px;border-radius:3px;overflow:hidden;gap:1px;margin-bottom:8px">
+          ${myC.length?`
+            <div style="flex:${redC};background:var(--red);border-radius:2px 0 0 2px" title="초과: ${redC}개"></div>
+            <div style="flex:${orC};background:var(--or)" title="위험: ${orC}개"></div>
+            <div style="flex:${myC.length-redC-orC-grnC};background:var(--yw)" title="주의"></div>
+            <div style="flex:${grnC};background:var(--gn);border-radius:0 2px 2px 0" title="양호: ${grnC}개"></div>
+          `:'<div style="flex:1;background:var(--bd2);border-radius:3px"></div>'}
+        </div>
+
+        <div class="row jb" style="font-size:10.5px">
+          <span style="color:var(--red)">초과 ${redC}</span>
+          <span style="color:var(--or)">위험 ${orC}</span>
+          <span style="color:var(--yw)">주의 ${myC.filter(c=>{ const p=getU(c).pct; return p>=71&&p<91; }).length}</span>
+          <span style="color:var(--gn)">양호 ${grnC}</span>
+        </div>
+
+        <!-- 최근 방문 -->
+        ${myV.length?`<div style="margin-top:10px;border-top:1px solid var(--bd);padding-top:8px;font-size:11px;color:var(--tx3)">
+          최근 방문: ${myV.sort((a,b)=>new Date(b.date)-new Date(a.date))[0].date}
+          (${S.clients.find(c=>c.id===myV.sort((a,b)=>new Date(b.date)-new Date(a.date))[0].clientId)?.companyName||'-'})
+        </div>`:''}
+      </div>`;
+    }).join('')}
+
+    ${!assignees.length?`<div class="empty">
+      <svg width="40" height="40" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.2" color="var(--tx3)"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+      <h3>담당자 정보 없음</h3><p>거래처를 추가하면 통계가 표시됩니다</p>
+    </div>`:''}
+
+  </div>`;
+}
+
+function doViewTeamMember(assignee){
+  fOwner='전체'; srchQ=''; fCat='전체'; fU='전체';
+  // 임시로 해당 담당자만 필터
+  fOwner='전체';
+  srchQ='';
+  // 직접 필터로 이동
+  go('list');
+  setTimeout(()=>{
+    fOwner='전체';
+    // assignee 이름으로 검색
+    srchQ=assignee;
+    render();
+  },50);
+}
+
+let sc={step:0,b64:null,parsed:null,loading:false,err:null};
+function PageScan(){
+  let body='';
+  if(sc.step===0)body=`
+    <div class="uz" onclick="document.getElementById('cfi').click()">
+      <svg width="38" height="38" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.2" color="var(--tx3)">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      <p>명함 촬영 또는 사진 선택</p>
+      <span>HTTPS 환경에서 카메라 직접 촬영 가능</span>
+      <input type="file" id="cfi" accept="image/*" capture="environment" style="display:none" onchange="onCardFile(this)">
+    </div>
+    <div class="card" style="margin-top:0">
+      <div style="font-size:11.5px;color:var(--tx2);line-height:1.75">
+        <b style="color:var(--tx)">AI 명함 인식 안내</b><br>
+        • Gemini 2.0 Flash로 자동 분석<br>• 인식 후 내용 수정 가능<br>• 저장 시 Sheets에 자동 기록
+      </div>
+    </div>`;
+  if(sc.step===1)body=`
+    <div style="padding:0 14px">
+      <img src="data:image/jpeg;base64,${sc.b64}" style="width:100%;border-radius:var(--r);margin-bottom:12px;border:1px solid var(--bd)">
+      ${sc.loading?`<div class="row g2" style="justify-content:center;padding:16px"><div class="spin"></div><span style="font-size:13px;color:var(--tx2)">Gemini 분석 중...</span></div>`:''}
+      ${sc.err?`<div style="color:var(--red);font-size:12px;padding:8px;background:var(--rbg);border-radius:var(--rs);margin-bottom:8px">${sc.err}</div>`:''}
+      ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">AI 분석 시작</button>`:''}
+      <button class="btn bs mt2" onclick="resetScan()">다시 선택</button>
+    </div>`;
+  if(sc.step===2&&sc.parsed){
+    const p=sc.parsed;
+    const dupes=S.clients.filter(c=>sim(c.companyName,p.companyName||'')>0.75);
+    body=`<div class="card" style="margin-top:0">
+      ${dupes.length?`<div style="background:var(--obg);border:1px solid rgba(232,146,58,.3);border-radius:var(--rs);padding:8px 11px;margin-bottom:11px;font-size:11px;color:var(--or)">⚠ 유사 거래처: ${dupes.map(d=>d.companyName).join(', ')}</div>`:''}
+      <div class="row g2" style="margin-bottom:11px"><span class="tag">AI 인식</span><span style="font-size:11px;color:var(--tx3)">확인 후 저장하세요</span></div>
+      <div class="ig"><label class="il">회사명 *</label><input type="text" id="f_co" value="${p.companyName||''}"></div>
+      <div class="ig"><label class="il">지점명</label><input type="text" id="f_br" value="${p.branchName||''}"></div>
+      <div class="ig"><label class="il">카테고리</label><select id="f_cat">${CATEGORIES.map(c=>`<option value="${c}" ${(p.category||autoCat(p.companyName||''))===c?'selected':''}>${c}</option>`).join('')}</select></div>
+      <div class="ig"><label class="il">담당자</label><input type="text" id="f_cn" value="${p.contactName||''}"></div>
+      <div class="ig"><label class="il">연락처</label><input type="text" id="f_cp" value="${p.contactPhone||''}"></div>
+      <div class="ig"><label class="il">주소</label><input type="text" id="f_ad" value="${p.address||''}"></div>
+      <button class="btn bp" onclick="saveCardC()">
+        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7" stroke-linecap="round"/></svg>
+        거래처 저장
+      </button>
+      <button class="btn bs mt2" onclick="resetScan()">취소</button>
+    </div>`;
+  }
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div class="row g2">
+        <button onclick="go('list')" style="background:none;border:none;color:var(--tx2);cursor:pointer;padding:4px">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
+        </button>
+        <div><div class="hdr-t" style="font-size:16px">신규 거래처 등록</div>
+        <div class="hdr-s">명함 AI 인식 (Gemini)</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="page" style="padding-top:12px">
+    ${body}
+    <div class="divider" style="margin-top:16px"></div>
+    <div class="slbl">직접 입력</div>
+    <div class="card" style="margin-top:0">
+      <div class="ig"><label class="il">회사명 *</label><input type="text" id="m_co" placeholder="예: 국민은행 강남지점"></div>
+      <div class="ig"><label class="il">카테고리</label><select id="m_cat">${CATEGORIES.map(c=>`<option value="${c}">${c}</option>`).join('')}</select></div>
+      <div class="ig"><label class="il">지점명</label><input type="text" id="m_br" placeholder="선택"></div>
+      <div class="ig"><label class="il">담당자</label><input type="text" id="m_cn" placeholder="선택"></div>
+      <div class="ig"><label class="il">연락처</label><input type="text" id="m_cp" placeholder="선택"></div>
+      <div class="ig"><label class="il">주소</label><input type="text" id="m_ad" placeholder="입력 시 자동 좌표 검색"></div>
+      <button class="btn bs" onclick="saveManual()">직접 등록</button>
+    </div>
+  </div>`;
+}
+function onCardFile(input){const f=input.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{sc={step:1,b64:e.target.result.split(',')[1],parsed:null,loading:false,err:null};render();};r.readAsDataURL(f);}
+async function doScanAI(){sc={...sc,loading:true,err:null};render();try{const p=await Gem.card(sc.b64);sc={...sc,step:2,parsed:p,loading:false};}catch(e){sc={...sc,loading:false,err:e.message};}render();}
+function saveCardC(){
+  const name=document.getElementById('f_co')?.value?.trim();if(!name){toast('회사명을 입력하세요');return;}
+  const addr=document.getElementById('f_ad')?.value?.trim()||'';
+  const c={id:uid(),companyName:name,branchName:document.getElementById('f_br')?.value?.trim()||'',
+    category:document.getElementById('f_cat')?.value||'일반기업',contactName:document.getElementById('f_cn')?.value?.trim()||'',
+    contactPhone:document.getElementById('f_cp')?.value?.trim()||'',address:addr,
+    ownerName:S.user?.name||'',lastVisitDate:null,lat:null,lng:null,createdAt:new Date().toISOString()};
+  set({clients:[...S.clients,c]});resetScan();toast('✓ 거래처 등록됨');
+  if(addr)setTimeout(()=>geocodeClient(c.id),500);
+  go('detail',c.id);
+}
+function saveManual(){
+  const name=document.getElementById('m_co')?.value?.trim();if(!name){toast('회사명을 입력하세요');return;}
+  const addr=document.getElementById('m_ad')?.value?.trim()||'';
+  const c={id:uid(),companyName:name,branchName:document.getElementById('m_br')?.value?.trim()||'',
+    category:document.getElementById('m_cat')?.value||'일반기업',contactName:document.getElementById('m_cn')?.value?.trim()||'',
+    contactPhone:document.getElementById('m_cp')?.value?.trim()||'',address:addr,
+    ownerName:S.user?.name||'',lastVisitDate:null,lat:null,lng:null,createdAt:new Date().toISOString()};
+  set({clients:[...S.clients,c]});toast('✓ 거래처 등록됨');
+  if(addr)setTimeout(()=>geocodeClient(c.id),500);
+  go('detail',c.id);
+}
+function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null};render();}
+
+/* ── SETTINGS ── */
+let driveBusy=false,syncProgress='';
+function PageSettings(){
+  const{drive}=S;
+  const isAdmin=S.user?.role==='admin';
+  const hasCfg=!!(CFG.driveClientId);
+  const dsc=drive.connected?'ok':driveBusy?'busy':'err';
+  const dst=drive.connected?'✓ Drive / Sheets 연결됨':driveBusy?'연결 중...':'연결 안됨';
+  return`
+  <div class="hdr">
+    <div class="hdr-row">
+      <div><div class="hdr-t">설정</div>
+        <div class="hdr-s">${S.user?.name} · ${isAdmin?'<span style="color:var(--yw)">⚙ 관리자</span>':'팀원'}</div>
+      </div>
+    </div>
+  </div>
+  <div class="page">
+
+    <div class="slbl">현재 접속</div>
+    <div class="card">
+      <div class="fr"><span class="fl">이름</span><span class="fv">${S.user?.name}</span></div>
+      <div class="fr"><span class="fl">권한</span>
+        <span class="fv" style="color:${isAdmin?'var(--yw)':'var(--ac)'}">${isAdmin?'⚙ 관리자':'👤 팀원'}</span></div>
+      ${isAdmin&&S.user?.spreadsheetId?`<div class="fr"><span class="fl">Sheets</span><span class="fv" style="font-size:11px">
+        <a href="https://docs.google.com/spreadsheets/d/${S.user.spreadsheetId}" target="_blank" style="color:var(--ac)">관리자 시트 열기 ↗</a></span></div>`:''}
+      <button class="btn bd2 bsm mt2" style="width:auto" onclick="doLogout()">로그아웃</button>
+    </div>
+
+    ${isAdmin?`
+    <div style="padding:8px 14px 4px">
+      <div style="font-size:11px;font-weight:700;color:var(--yw);letter-spacing:.06em;text-transform:uppercase">⚙ 관리자 전용 설정</div>
+      <div style="font-size:10.5px;color:var(--tx3);margin-top:3px">아래 설정은 같은 기기의 팀원 로그인에도 자동 적용됩니다</div>
+    </div>
+
+    <div class="slbl">Google OAuth Client ID</div>
+    <div class="card">
+      <div class="ig"><label class="il">Client ID (Drive · Sheets 연동 필수)</label>
+        <input type="text" id="s_cid" value="${CFG.driveClientId}" placeholder="xxx.apps.googleusercontent.com"></div>
+      <div class="ds ${dsc}" style="margin-bottom:10px">
+        <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          ${drive.connected?'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>':'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>'}
+        </svg><span>${dst}</span>
+        ${drive.connected?`<span style="font-size:10px;color:var(--tx3);margin-left:auto">만료: ${new Date(drive.expiresAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</span>`:''}
+      </div>
+      ${syncProgress?`<div style="font-size:11px;color:var(--ac);padding:5px 0;text-align:center;font-family:var(--mo)">${syncProgress}</div>`:''}
+      <div class="row g2" style="flex-wrap:wrap">
+        <button class="btn bp bsm f1" onclick="doConnect()">${driveBusy?'<div class="spin"></div>':'Drive 연결'}</button>
+        ${drive.connected?`<button class="btn bg bsm" onclick="doSync()">Sheets 저장</button>
+        <button class="btn bs bsm" onclick="doLoad()">Sheets 불러오기</button>`:''}
+      </div>
+      <div style="font-size:10px;color:var(--tx3);margin-top:9px;line-height:1.8">
+        <a href="https://console.cloud.google.com" target="_blank" style="color:var(--ac)">Google Cloud Console</a> → Sheets API · Drive API 활성화<br>
+        파일명: <b>VisitLog_[담당자명]_하나감정평가법인</b> (탭: 거래처목록·방문기록·방문주기)
+      </div>
+    </div>
+
+    <div class="slbl">Google Maps API 키</div>
+    <div class="card">
+      <div class="ig"><label class="il">Maps API 키 (지도 · 좌표검색)</label>
+        <input type="password" id="s_mk" value="${CFG.mapsKey}" placeholder="AIza..."></div>
+      <button class="btn bs bsm" style="width:auto" onclick="saveMapsKey()">저장 및 지도 로드</button>
+      <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.7">
+        Maps JavaScript API + Geocoding API 활성화 필요 · 미설정 시 Gemini AI로 대체
+      </div>
+    </div>
+
+    <div class="slbl">관리자 비밀번호 변경</div>
+    <div class="card">
+      <div class="ig"><label class="il">현재 비밀번호</label><input type="password" id="pw_cur" placeholder="현재 비밀번호"></div>
+      <div class="ig"><label class="il">새 비밀번호</label><input type="password" id="pw_new" placeholder="4자 이상"></div>
+      <div class="ig"><label class="il">확인</label><input type="password" id="pw_new2" placeholder="재입력"></div>
+      <button class="btn bs bsm" style="width:auto" onclick="doChangePw()">비밀번호 변경</button>
+    </div>
+
+    <div class="slbl">내 거래처 공유 설정</div>
+    <div class="card">
+      <div class="row jb" style="margin-bottom:10px">
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600;margin-bottom:3px">내 거래처를 팀원에게 공유</div>
+          <div style="font-size:11px;color:var(--tx3);line-height:1.6">
+            ${CFG.shareEnabled
+              ?'<span style="color:var(--gn)">✓ 켜짐</span> — 다른 팀원이 내 시트를 불러갈 수 있습니다'
+              :'<span style="color:var(--tx3)">꺼짐</span> — 내 거래처는 비공개입니다'}
+          </div>
+        </div>
+        <div onclick="toggleShare()" style="width:48px;height:26px;border-radius:13px;background:${CFG.shareEnabled?'var(--gn)':'var(--bg4)'};position:relative;cursor:pointer;flex-shrink:0;transition:background .2s">
+          <div style="width:22px;height:22px;border-radius:50%;background:#fff;position:absolute;top:2px;left:${CFG.shareEnabled?'24px':'2px'};transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)"></div>
+        </div>
+      </div>
+      <div style="font-size:10.5px;color:var(--tx3);line-height:1.7;border-top:1px solid var(--bd);padding-top:8px;margin-top:6px">
+        공유를 켠 후 <b>Sheets 저장</b>을 누르면 적용됩니다. 팀원은 본인 앱에서<br>
+        업로드 화면 → "팀원 거래처 공유 가져오기"로 내 거래처를 불러갈 수 있습니다.
+      </div>
+    </div>
+
+    <div class="slbl">카테고리 자동 재분류</div>
+    <div class="card">
+      <div style="font-size:11.5px;color:var(--tx2);margin-bottom:9px;line-height:1.7">
+        거래처명 기준으로 카테고리를 재분류합니다.<br>
+        (○○은행→제1금융권, ○○금고/조합→제2금융권 등)<br>
+        현재 "일반기업"으로 분류된 거래처: <b>${S.clients.filter(c=>c.category==='일반기업').length}곳</b>
+      </div>
+      <button class="btn bs bsm" style="width:auto" onclick="doReclassify()">카테고리 재분류</button>
+    </div>
+
+    <div class="slbl">데이터 관리</div>
+    <div class="card">
+      <div class="row g2" style="flex-wrap:wrap;margin-bottom:8px">
+        <button class="btn bs bsm" onclick="doExport()">JSON 내보내기</button>
+        <button class="btn bd2 bsm" onclick="doClear()">전체 초기화</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--tx3)">거래처 ${S.clients.length}개 · 방문 ${S.visits.length}건</div>
+    </div>
+    `:`
+    <div class="slbl">Drive 연결</div>
+    <div class="card">
+      <div class="ds ${dsc}" style="margin-bottom:10px">
+        <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          ${drive.connected?'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>':'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>'}
+        </svg><span>${dst}</span>
+      </div>
+      ${!hasCfg?`<div style="font-size:11.5px;color:var(--or);line-height:1.6">관리자 설정이 완료되지 않았습니다.<br>관리자에게 설정을 요청하세요.</div>`:`
+      ${syncProgress?`<div style="font-size:11px;color:var(--ac);padding:5px 0;text-align:center;font-family:var(--mo)">${syncProgress}</div>`:''}
+      <div class="row g2">
+        <button class="btn bp bsm f1" onclick="doConnect()">${driveBusy?'<div class="spin"></div>':'내 Drive 연결'}</button>
+        ${drive.connected?`<button class="btn bg bsm" onclick="doSync()">저장</button>
+        <button class="btn bs bsm" onclick="doLoad()">불러오기</button>`:''}
+      </div>`}
+    </div>
+    `}
+
+    <div class="slbl">방문 주기 설정 ${!isAdmin?'<span style="font-size:9px;color:var(--tx3)">(세션 내 임시 변경)</span>':''}</div>
+    <div class="card" style="padding:0">
+      ${CATEGORIES.map(cat=>`
+      <div class="crow">
+        <div><div style="font-size:13px;font-weight:600">${cat}</div>
+          <div style="font-size:10px;color:var(--tx3);margin-top:2px">${CYCLE_HINTS[cat]}</div></div>
+        <div class="cc2">
+          <div class="cb2" onclick="adjCycle('${cat}',-5)">−</div>
+          <div class="cv">${S.cycles[cat]}일</div>
+          <div class="cb2" onclick="adjCycle('${cat}',5)">+</div>
+        </div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function doLogout(){
+  if(!confirm('로그아웃 하시겠습니까?'))return;
+  set({user:null});loginScreen='select';lf={name:'',pw:'',newPw:'',newPw2:''};go('list');
+}
+
+function saveMapsKey(){
+  const key=document.getElementById('s_mk')?.value?.trim()||'';
+  CFG={...CFG,mapsKey:key};saveCfg(CFG);
+  const old=document.getElementById('gmaps-script');if(old)old.remove();
+  if(key)loadMapsScript();
+  toast('✓ Maps API 키 저장됨');
+}
+
+async function doChangePw(){
+  const cur=document.getElementById('pw_cur')?.value||'';
+  const nw=document.getElementById('pw_new')?.value||'';
+  const nw2=document.getElementById('pw_new2')?.value||'';
+  if(!cur){toast('현재 비밀번호를 입력하세요');return;}
+  const curHash=await sha256(cur);
+  if(curHash!==CFG.adminPwHash){toast('현재 비밀번호가 틀렸습니다');return;}
+  if(!nw||nw.length<4){toast('새 비밀번호는 4자 이상이어야 합니다');return;}
+  if(nw!==nw2){toast('새 비밀번호가 일치하지 않습니다');return;}
+  CFG={...CFG,adminPwHash:await sha256(nw)};saveCfg(CFG);
+  toast('✓ 비밀번호가 변경됐습니다');
+}
+
+async function doConnect(){
+  const cid=(document.getElementById('s_cid')?.value||CFG.driveClientId||'').trim();
+  if(!cid){toast('Client ID를 입력하세요');return;}
+  CFG={...CFG,driveClientId:cid};saveCfg(CFG);
+  driveBusy=true;render();
+  try{await GSheets.connect(cid);driveBusy=false;toast('✓ Drive 연결됨');render();}
+  catch(e){driveBusy=false;toast('연결 실패: '+e.message);render();}
+}
+
+async function doSync(){
+  syncProgress='준비 중...';render();
+  try{
+    await GSheets.syncAll(p=>{syncProgress=p;render();});
+    syncProgress='';toast('✓ Sheets 저장 완료');render();
+  }catch(e){syncProgress='';toast('오류: '+e.message);render();}
+}
+async function doLoad(){try{toast('불러오는 중...');await GSheets.loadMine();}catch(e){toast('오류: '+e.message);}}
+
+function adjCycle(cat,d){set({cycles:{...S.cycles,[cat]:Math.max(5,Math.min(365,(S.cycles[cat]||30)+d))}}); }
+
+function doImport(input){
+  const f=input.files[0];if(!f)return;
+  const ext=f.name.split('.').pop().toLowerCase();
+  const r=new FileReader();
+  if(ext==='csv'){r.onload=e=>{importRows(e.target.result.split('\n').map(l=>l.split(',').map(c=>c.replace(/^"|"$/g,'').trim())));};r.readAsText(f,'utf-8');}
+  else{r.onload=e=>{const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});importRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1}));};r.readAsArrayBuffer(f);}
+}
+function importRows(rows){
+  const parsed=parseRows(rows);if(!parsed.length){toast('헤더를 확인하세요');return;}
+  const fresh=parsed.filter(p=>!S.clients.some(c=>sim(c.companyName,p.companyName)>0.85));
+  set({clients:[...S.clients,...fresh]});
+  toast(`✓ ${fresh.length}개 추가 (중복 ${parsed.length-fresh.length}개 제외)`);
+  if(S.drive.connected)setTimeout(()=>doSync(),800);
+}
+async function doAIParse(){
+  const txt=document.getElementById('s_ait')?.value?.trim();if(!txt){toast('텍스트를 입력하세요');return;}
+  toast('Gemini 분석 중...');
+  try{
+    const list=await Gem.parseList(txt);
+    const fresh=list.map(p=>({id:uid(),companyName:p.companyName||'',branchName:p.branchName||'',
+      category:CATEGORIES.includes(p.category)?p.category:autoCat(p.companyName||''),
+      contactName:p.contactName||'',contactPhone:p.contactPhone||'',address:p.address||'',
+      ownerName:S.user?.name||'',lastVisitDate:null,lat:null,lng:null,createdAt:new Date().toISOString()
+    })).filter(c=>c.companyName);
+    set({clients:[...S.clients,...fresh]});toast(`✓ ${fresh.length}개 추가됨`);
+  }catch(e){toast('AI 오류: '+e.message);}
+}
+function toggleShare(){
+  CFG={...CFG,shareEnabled:!CFG.shareEnabled};
+  saveCfg(CFG);
+  toast(CFG.shareEnabled?'✓ 거래처 공유가 켜졌습니다 (Sheets 저장 후 적용)':'거래처 공유가 꺼졌습니다');
+  render();
+}
+
+function doReclassify(){
+  let changed=0;
+  const updated=S.clients.map(c=>{
+    const newCat=autoCat(c.companyName+(c.branchName?' '+c.branchName:''));
+    if(newCat!==c.category){changed++;return{...c,category:newCat};}
+    return c;
+  });
+  set({clients:updated});
+  toast(`✓ ${changed}개 거래처 카테고리 재분류됨`);
+}
+
+async function doBatchGeo(){
+  const targets=S.clients.filter(c=>c.address&&!c.lat);
+  if(!targets.length){toast('좌표 없는 거래처가 없습니다');return;}
+  toast(`${targets.length}개 좌표 검색 중...`);
+  let done=0;
+  for(const c of targets){
+    try{
+      if(CFG.mapsKey&&window.google?.maps){
+        await new Promise(res=>{
+          new google.maps.Geocoder().geocode({address:c.address,region:'KR'},(r,st)=>{
+            if(st==='OK'&&r[0]){const loc=r[0].geometry.location;
+              S.clients=S.clients.map(x=>x.id===c.id?{...x,lat:loc.lat(),lng:loc.lng()}:x);done++;}
+            res();
+          });
+        });
+      }else{
+        const{lat,lng}=await Gem.geocode(c.address);
+        S.clients=S.clients.map(x=>x.id===c.id?{...x,lat,lng}:x);done++;
+      }
+    }catch{}
+    await new Promise(r=>setTimeout(r,500));
+  }
+  save(S);render();
+  toast(`✓ ${done}/${targets.length}개 좌표 등록됨`);
+  if(page==='map'&&_gmap)placeMapMarkers();
+}
+function doExport(){
+  const blob=new Blob([JSON.stringify({clients:S.clients,visits:S.visits,cycles:S.cycles},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`visitlog_${S.user?.name||'data'}_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();URL.revokeObjectURL(a.href);
+}
+function doClear(){if(!confirm('모든 데이터를 삭제하시겠습니까?'))return;set({clients:[],visits:[],cycles:{...DEF_CYCLES}});toast('초기화됨');go('list');}
+
+// ═══════════════════════════════════════════════
+// 10. RENDER
+// ═══════════════════════════════════════════════
+function render(){
+  const root=document.getElementById('app');if(!root)return;
+  if(!S.user){root.innerHTML=PageLogin();return;}
+
+  let content='';
+  if(page==='list')     content=PageList();
+  else if(page==='import')   content=PageImport();
+  else if(page==='team')     content=PageTeam();
+  else if(page==='detail')   content=PageDetail();
+  else if(page==='visit')    content=PageVisit();
+  else if(page==='map')      content=PageMap();
+  else if(page==='history')  content=PageHistory();
+  else if(page==='scan')     content=PageScan();
+  else if(page==='settings') content=PageSettings();
+
+  const mainPages=['list','import','team','map','history','settings'];
+  const subPages =['detail','visit','scan'];
+
+  root.innerHTML=`
+    ${content}
+    <nav class="bnav">
+      <div class="ni ${page==='list'?'on':''}" onclick="go('list')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="${page==='list'?2:1.5}"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 0 2-2h2a2 2 0 0 0 2 2"/></svg>목록</div>
+      <div class="ni ${page==='team'?'on':''}" onclick="go('team')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="${page==='team'?2:1.5}"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>팀원</div>
+      <div class="nf">
+        <button class="fab" onclick="go('scan')">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="ni ${page==='map'?'on':''}" onclick="go('map')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="${page==='map'?2:1.5}"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>지도</div>
+      <div class="ni ${page==='settings'?'on':''}" onclick="go('settings')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="${page==='settings'?2:1.5}"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>설정</div>
+    </nav>`;
+
+  if(page==='map'){
+    if(CFG.mapsKey&&!window.google?.maps)loadMapsScript();
+    else if(window.google?.maps)initGMap();
+  }
+  if(page==='detail'){
+    const c=S.clients.find(x=>x.id===pageParam);
+    if(c?.lat&&CFG.mapsKey&&window.google?.maps)initDetailMap(c);
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 11. INIT
+// ═══════════════════════════════════════════════
+if(CFG.mapsKey)loadMapsScript();
+render();
+</script>
+</body>
+</html>
