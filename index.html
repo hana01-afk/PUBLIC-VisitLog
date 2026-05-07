@@ -189,9 +189,9 @@ select option{background:var(--bg3)}
 // ═══════════════════════════════════════════════
 const GEMINI_KEY   = 'AIzaSyAWPlv5ImLEHPeARwPcbPFTGg0QRN7yZPg';
 const GEMINI_MODEL = 'gemini-2.0-flash';
-const STORAGE_KEY  = 'vl_hana_v4';
-const ADMIN_PW_KEY = 'vl_hana_adminpw'; // 관리자 비밀번호는 별도 key에 저장
-const CFG_KEY      = 'vl_hana_cfg';     // 전역 설정(OAuth·Maps키) 별도 저장
+const STORAGE_PREFIX = 'vl_hana_v5_user_';  // 사용자별 데이터 분리
+const STORAGE_LEGACY = 'vl_hana_v4';         // 마이그레이션용
+const CFG_KEY      = 'vl_hana_cfg';          // 전역 설정 (관리자가 설정, 모두 공유)
 
 const CATEGORIES = ['제1금융권','제2금융권/단위조합','공공기관/특수기관','일반기업','증권사/보험사'];
 const DEF_CYCLES = {'제1금융권':30,'제2금융권/단위조합':60,'공공기관/특수기관':90,'일반기업':45,'증권사/보험사':30};
@@ -204,18 +204,15 @@ const CYCLE_HINTS = {
   '증권사/보험사':'금융투자업 관련 기관',
 };
 
-// Sheets column headers
-const CLIENT_HEADERS  = ['ID','회사명','지점명','카테고리','주소','담당자','연락처','담당직원','최근방문','위도','경도','등록일'];
+const CLIENT_HEADERS  = ['ID','회사명','지점명','카테고리','주소','담당자','연락처','등록자','최근방문','위도','경도','등록일'];
 const VISIT_HEADERS   = ['ID','거래처ID','방문유형','날짜','메모','다음예정','등록일'];
 const CYCLE_HEADERS   = ['카테고리','방문주기(일)'];
 
 // ═══════════════════════════════════════════════
 // 1. STATE
 // ═══════════════════════════════════════════════
-// ── 전역 설정 (관리자가 설정, 팀원 공유) ──────────────────
-function loadCfg(){
-  try{ return JSON.parse(localStorage.getItem(CFG_KEY)); }catch{ return null; }
-}
+// ── 전역 설정 (관리자가 설정, 모든 사용자 공유) ─────────────
+function loadCfg(){ try{ return JSON.parse(localStorage.getItem(CFG_KEY)); }catch{ return null; } }
 function saveCfg(c){ try{ localStorage.setItem(CFG_KEY,JSON.stringify(c)); }catch{} }
 
 const _cfg = loadCfg() || {};
@@ -223,25 +220,42 @@ let CFG = {
   driveClientId: _cfg.driveClientId || '',
   mapsKey:       _cfg.mapsKey       || '',
   adminPwHash:   _cfg.adminPwHash   || '',
-  shareEnabled:  _cfg.shareEnabled  ?? false, // 내 거래처 공유 허용 여부
+  shareEnabled:  _cfg.shareEnabled  ?? false,
+  // 팀원 관리 (관리자가 추가/승인)
+  approvedMembers:  _cfg.approvedMembers  || [],   // [{name, addedAt}]
+  pendingMembers:   _cfg.pendingMembers   || [],   // [{name, requestedAt}]
 };
 
-// ── 사용자 세션 상태 ───────────────────────────────────────
-function load(){ try{ return JSON.parse(localStorage.getItem(STORAGE_KEY)); }catch{ return null; } }
-function save(s){ try{ localStorage.setItem(STORAGE_KEY,JSON.stringify(s)); }catch{} }
+// ── 사용자 세션 상태 (사용자별 분리 저장) ───────────────────
+function userKey(name){ return STORAGE_PREFIX + (name || 'guest'); }
+function loadUserData(name){ try{ return JSON.parse(localStorage.getItem(userKey(name))); }catch{ return null; } }
+function saveUserData(name,s){ try{ localStorage.setItem(userKey(name),JSON.stringify(s)); }catch{} }
 
-const _s = load() || {};
+// 세션 정보(누가 로그인 중인지)는 별도 키
+const SESSION_KEY = 'vl_hana_session';
+function loadSession(){ try{ return JSON.parse(localStorage.getItem(SESSION_KEY)); }catch{ return null; } }
+function saveSession(u){ try{ localStorage.setItem(SESSION_KEY,JSON.stringify(u)); }catch{} }
+
+const _sess = loadSession();
+const _userData = _sess?.name ? (loadUserData(_sess.name) || {}) : {};
+
 let S = {
-  user:    _s.user    || null,   // {name, role:'admin'|'member', spreadsheetId}
-  clients: _s.clients || [],
-  visits:  _s.visits  || [],
-  cycles:  _s.cycles  || {...DEF_CYCLES},
-  drive:   _s.drive   || {connected:false,accessToken:null,expiresAt:null},
+  user:    _sess || null,   // {name, role:'admin'|'member', spreadsheetId}
+  clients: _userData.clients || [],
+  visits:  _userData.visits  || [],
+  cycles:  _userData.cycles  || {...DEF_CYCLES},
+  drive:   _userData.drive   || {connected:false,accessToken:null,expiresAt:null},
 };
 
 function set(patch,skipSave=false){
   S={...S,...patch};
-  if(!skipSave) save(S);
+  if(!skipSave){
+    if(S.user?.name){
+      // 사용자 데이터는 이름별로 저장 (user 정보 제외)
+      saveUserData(S.user.name,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});
+    }
+    saveSession(S.user);
+  }
   render();
 }
 
@@ -368,24 +382,35 @@ function parseRows(rows){
       if(m){companyName=m[1];branchName=m[2];}
     }
 
+    // 담당자가 현재 사용자 이름과 같으면 제외 (사용자 본인 이름은 거래처 담당자가 아님)
+    const me=S.user?.name||'';
+    const approvedNames=[me, ...(CFG.approvedMembers||[]).map(m=>m.name)];
+    let contactName=o.contactName||'';
+    if(contactName){
+      // "김은", "김은과장", "김은 과장" 등의 형태에서 사용자 이름 부분 제외
+      const isUserName = approvedNames.some(n=>n && (contactName===n || contactName.startsWith(n+' ') || contactName.startsWith(n+',')));
+      if(isUserName) contactName='';
+    }
+
     return{
       companyName,branchName,
-      contactName:o.contactName||'',
+      contactName,
       contactPhone:o.contactPhone||'',
-      assignee:o.assignee||(S.user?.name||''),
     };
   }).filter(Boolean);
 
-  // 2단계: 동일 거래처명+지점명 통합 (담당자가 다르면 복수 표시)
-  const merged=new Map(); // key: "companyName|branchName"
+  // 2단계: 거래처명만으로 통합 (지점명은 첫 번째 값 채택, 담당자는 모두 병합)
+  const merged=new Map(); // key: "companyName"
   rawList.forEach(r=>{
-    const key=r.companyName+'|'+r.branchName;
+    const key=r.companyName;
     if(merged.has(key)){
       const existing=merged.get(key);
       // 담당자 병합
       if(r.contactName && !existing.contacts.includes(r.contactName)){
         existing.contacts.push(r.contactName);
       }
+      // 지점명 — 첫 번째 값 유지하되 비어있으면 채움
+      if(!existing.branchName && r.branchName) existing.branchName=r.branchName;
       if(!existing.contactPhone && r.contactPhone) existing.contactPhone=r.contactPhone;
       existing.count++;
     }else{
@@ -399,21 +424,8 @@ function parseRows(rows){
     }
   });
 
-  // 3단계: 담당자가 빈 항목은 같은 회사명의 다른 항목에서 가져오기
-  const byCompany=new Map();
-  merged.forEach((v,k)=>{
-    if(!byCompany.has(v.companyName))byCompany.set(v.companyName,[]);
-    byCompany.get(v.companyName).push(v);
-  });
-  merged.forEach(v=>{
-    if(!v.contacts.length){
-      const others=byCompany.get(v.companyName)||[];
-      const donor=others.find(o=>o.contacts.length&&o!==v);
-      if(donor) v.contacts=[donor.contacts[0]];
-    }
-  });
-
-  // 4단계: 최종 객체 생성 (assignee 필드 제거)
+  // 3단계: 빈 담당자는 같은 회사명 다른 항목에서 가져오기 (이미 통합되어 의미 없지만 안전망)
+  // 4단계: 최종 객체 생성
   return[...merged.values()].map(v=>{
     const fullName=v.companyName+(v.branchName?' '+v.branchName:'');
     const cat=autoCat(fullName);
@@ -422,10 +434,10 @@ function parseRows(rows){
       companyName:v.companyName,
       branchName:v.branchName,
       category:cat,
-      address:'',  // 거래처 주소는 사용자가 직접 입력 또는 좌표 검색
+      address:'',  // 거래처 주소는 자동 검색 또는 직접 입력
       contactName:v.contacts.join(', '),  // 복수 담당자 쉼표 병기
       contactPhone:v.contactPhone||'',
-      ownerName:S.user?.name||'',  // 등록한 본인 (구분용, 표시 안함)
+      ownerName:S.user?.name||'',  // 등록한 본인
       lastVisitDate:null,  // 미방문 디폴트
       lat:null,lng:null,
       createdAt:new Date().toISOString(),
@@ -599,19 +611,22 @@ const GSheets={
     if(updates.length) await this.batchUpdate(ssId,updates);
 
     set({user:{...S.user,spreadsheetId:ssId}},true);
-    save(S);
+    saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});
   },
 
   // 내 스프레드시트에서 불러오기
-  async loadMine(){
+  async loadMine(onProgress){
     const name=S.user?.name||'공통';
+    onProgress&&onProgress('스프레드시트 찾는 중...');
     const ssId=S.user?.spreadsheetId||await this.getOrCreateSheet(name);
-    set({user:{...S.user,spreadsheetId:ssId}},true);
+    S.user={...S.user,spreadsheetId:ssId};
+    saveSession(S.user);
 
+    onProgress&&onProgress('데이터 불러오는 중...');
     const[cRows,vRows,cycRows]=await Promise.all([
-      this.readSheet(ssId,'거래처목록!A2:L'),
-      this.readSheet(ssId,'방문기록!A2:G'),
-      this.readSheet(ssId,'방문주기!A2:B'),
+      this.readSheet(ssId,'거래처목록!A2:L').catch(()=>[]),
+      this.readSheet(ssId,'방문기록!A2:G').catch(()=>[]),
+      this.readSheet(ssId,'방문주기!A2:B').catch(()=>[]),
     ]);
     const clients=cRows.map(r=>({
       id:r[0]||uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
@@ -631,7 +646,83 @@ const GSheets={
     });
     if(shareFlag!==null){CFG={...CFG,shareEnabled:shareFlag};saveCfg(CFG);}
     set({clients,visits,cycles});
-    toast('✓ 스프레드시트에서 불러왔습니다');
+    return {clientCount:clients.length, visitCount:visits.length};
+  },
+
+  // 관리자 전용: 전체 팀원 데이터를 하나의 마스터 시트에 담당자별 탭으로 통합
+  async createMasterSheet(onProgress){
+    onProgress&&onProgress('마스터 시트 생성 중...');
+    const masterName='VisitLog_전체통합_하나감정평가법인';
+    // 기존 마스터 시트 찾기
+    const q=encodeURIComponent(`name='${masterName}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`);
+    const list=await this.req(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`);
+    let masterId;
+
+    // 수집할 사용자 목록: 관리자 + 승인된 팀원
+    const users=['관리자', ...((CFG.approvedMembers||[]).map(m=>m.name))];
+
+    // 각 사용자의 데이터 수집
+    const allUserData={};
+    for(let i=0;i<users.length;i++){
+      const u=users[i];
+      onProgress&&onProgress(`${u} 데이터 수집 중... (${i+1}/${users.length})`);
+      try{
+        const ssId=await this.getOrCreateSheet(u);
+        const cRows=await this.readSheet(ssId,'거래처목록!A2:L').catch(()=>[]);
+        const vRows=await this.readSheet(ssId,'방문기록!A2:G').catch(()=>[]);
+        allUserData[u]={cRows,vRows};
+      }catch(e){
+        console.warn(`${u} 데이터 수집 실패:`,e);
+        allUserData[u]={cRows:[],vRows:[]};
+      }
+    }
+
+    // 마스터 시트가 없으면 생성, 있으면 모든 탭 삭제 후 재생성
+    if(list.files.length){
+      masterId=list.files[0].id;
+      // 기존 시트 정보 가져와서 모두 삭제
+      const meta=await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${masterId}?fields=sheets.properties`);
+      const existingSheets=meta.sheets.map(s=>s.properties.sheetId);
+      // 새 시트들 먼저 추가 후 기존 시트 삭제 (최소 1개 시트는 유지해야 함)
+      const requests=users.map((u,i)=>({addSheet:{properties:{title:u+'_거래처',index:i*2}}}))
+        .concat(users.map((u,i)=>({addSheet:{properties:{title:u+'_방문',index:i*2+1}}})));
+      await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${masterId}:batchUpdate`,{
+        method:'POST',body:JSON.stringify({requests}),
+      }).catch(()=>{}); // 이미 있으면 무시
+      // 기존 시트 삭제
+      const delReqs=existingSheets.map(sid=>({deleteSheet:{sheetId:sid}}));
+      if(delReqs.length){
+        await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${masterId}:batchUpdate`,{
+          method:'POST',body:JSON.stringify({requests:delReqs}),
+        }).catch(()=>{});
+      }
+    }else{
+      onProgress&&onProgress('새 마스터 시트 생성 중...');
+      const sheets=[];
+      users.forEach((u,i)=>{
+        sheets.push({properties:{title:u+'_거래처',index:i*2}});
+        sheets.push({properties:{title:u+'_방문',index:i*2+1}});
+      });
+      const ss=await this.req('https://sheets.googleapis.com/v4/spreadsheets',{
+        method:'POST',
+        body:JSON.stringify({properties:{title:masterName,locale:'ko_KR'},sheets}),
+      });
+      masterId=ss.spreadsheetId;
+    }
+
+    // 각 탭에 헤더 + 데이터 입력
+    onProgress&&onProgress('데이터 작성 중...');
+    const updates=[];
+    for(const u of users){
+      const d=allUserData[u];
+      updates.push({range:`${u}_거래처!A1`, values:[CLIENT_HEADERS]});
+      if(d.cRows.length) updates.push({range:`${u}_거래처!A2`, values:d.cRows});
+      updates.push({range:`${u}_방문!A1`, values:[VISIT_HEADERS]});
+      if(d.vRows.length) updates.push({range:`${u}_방문!A2`, values:d.vRows});
+    }
+    if(updates.length) await this.batchUpdate(masterId,updates);
+
+    return {masterId, userCount:users.length, totalClients:Object.values(allUserData).reduce((s,d)=>s+d.cRows.length,0)};
   },
 };
 
@@ -645,7 +736,7 @@ function loadMapsScript(){
   if(!key||document.getElementById('gmaps-script'))return;
   const s=document.createElement('script');
   s.id='gmaps-script';
-  s.src=`https://maps.googleapis.com/maps/api/js?key=${key}&callback=onMapsLoaded&language=ko&region=KR`;
+  s.src=`https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=onMapsLoaded&language=ko&region=KR`;
   s.async=true;s.defer=true;
   document.head.appendChild(s);
 }
@@ -851,18 +942,57 @@ function showGpsHelp(reason){
 // ═══════════════════════════════════════════════
 // 8. GEOCODING
 // ═══════════════════════════════════════════════
+// 거래처명으로 Places Text Search → 주소 + 좌표 자동 가져오기
+async function searchClientByName(id){
+  const c=S.clients.find(x=>x.id===id);
+  if(!c){return;}
+  if(!CFG.mapsKey||!window.google?.maps){
+    toast('Google Maps API가 설정되어 있지 않습니다');return;
+  }
+  if(!window.google.maps.places){
+    toast('Places API가 활성화되지 않았습니다 (Google Cloud에서 활성화 필요)');return;
+  }
+
+  toast('거래처 정보 검색 중...');
+  const query=c.companyName+(c.branchName?' '+c.branchName:'');
+  const svc=new google.maps.places.PlacesService(document.createElement('div'));
+  svc.textSearch({query, region:'kr', language:'ko'}, (res,status)=>{
+    if(status===google.maps.places.PlacesServiceStatus.OK && res[0]){
+      const p=res[0];
+      const loc=p.geometry.location;
+      set({clients:S.clients.map(x=>x.id===id?{
+        ...x,
+        address: p.formatted_address || x.address,
+        lat: loc.lat(),
+        lng: loc.lng(),
+      }:x)});
+      toast('✓ 주소 + 좌표 등록됨');
+      if(page==='map'&&_gmap)placeMapMarkers();
+    }else{
+      toast(`검색 결과 없음 (${status})`);
+    }
+  });
+}
+
 async function geocodeClient(id){
   const c=S.clients.find(x=>x.id===id);
-  if(!c?.address){toast('주소 정보가 없습니다');return;}
+  if(!c){return;}
+  // 주소가 없으면 거래처명으로 자동 검색
+  if(!c.address){
+    if(CFG.mapsKey&&window.google?.maps?.places){
+      return searchClientByName(id);
+    }
+    toast('주소 정보가 없습니다');return;
+  }
 
-  // Google Geocoding API 우선, 없으면 Gemini
+  // 주소가 있으면 Geocoding
   if(CFG.mapsKey&&window.google?.maps){
     const gc=new google.maps.Geocoder();
     gc.geocode({address:c.address,region:'KR'},async(res,status)=>{
       if(status==='OK'&&res[0]){
         const loc=res[0].geometry.location;
         set({clients:S.clients.map(x=>x.id===id?{...x,lat:loc.lat(),lng:loc.lng()}:x)});
-        toast('✓ 좌표 등록됨 (Google)');
+        toast('✓ 좌표 등록됨');
         if(page==='map'&&_gmap)placeMapMarkers();
       }else{
         try{const{lat,lng}=await Gem.geocode(c.address);
@@ -970,15 +1100,90 @@ function PageLogin(){
       </div>
     </div>`;
 
+  // ── 승인 요청 화면 ────────────────────────────────────────
+  if(loginScreen==='request') return `
+    <div class="lsc">
+      <div class="llo">📨</div>
+      <div class="lt">승인 요청</div>
+      <div class="ls" style="margin-bottom:20px">관리자에게 사용 승인을 요청합니다</div>
+      <div style="width:100%;max-width:320px">
+        <div class="card" style="margin:0 0 14px">
+          <div class="row jb" style="margin-bottom:10px">
+            <span style="font-size:12px;color:var(--tx3)">요청 이름</span>
+            <span style="font-size:14px;font-weight:600">${lf.name}</span>
+          </div>
+          <div style="font-size:11.5px;color:var(--tx2);line-height:1.7;border-top:1px solid var(--bd);padding-top:10px">
+            관리자가 승인하기 전까지는 앱에 접근할 수 없습니다.<br>
+            요청 후 관리자에게 직접 알려주세요.
+          </div>
+        </div>
+        <button class="btn bp" onclick="doRequestApproval()">승인 요청 보내기</button>
+        <button class="btn bs mt2" onclick="loginScreen='member';lf={name:'',pw:'',newPw:'',newPw2:''};render()">← 다른 이름으로</button>
+      </div>
+    </div>`;
+
+  // ── 승인 대기 화면 ────────────────────────────────────────
+  if(loginScreen==='pending') return `
+    <div class="lsc">
+      <div class="llo">⏳</div>
+      <div class="lt">승인 대기 중</div>
+      <div class="ls" style="margin-bottom:20px">${lf.name}님의 승인 요청이 접수되었습니다</div>
+      <div style="width:100%;max-width:320px">
+        <div class="card" style="margin:0 0 14px;text-align:center;padding:20px 16px">
+          <div style="font-size:13px;color:var(--tx2);line-height:1.8">
+            관리자가 승인하면 앱을 사용할 수 있습니다.<br>
+            관리자에게 직접 연락해 주세요.
+          </div>
+        </div>
+        <button class="btn bp" onclick="doMemberLogin()">로그인 재시도</button>
+        <button class="btn bs mt2" onclick="loginScreen='select';lf={name:'',pw:'',newPw:'',newPw2:''};render()">← 처음으로</button>
+      </div>
+    </div>`;
+
   return '';
 }
 
 function doMemberLogin(){
   const name=document.getElementById('ln')?.value?.trim();
   if(!name){toast('담당자 이름을 입력하세요');return;}
-  set({user:{name,role:'member',spreadsheetId:S.user?.spreadsheetId||null}});
+
+  // 관리자 설정 완료 후에는 승인 체크
+  if(CFG.driveClientId){
+    const isApproved = (CFG.approvedMembers||[]).some(m=>m.name===name);
+    const isPending  = (CFG.pendingMembers||[]).some(m=>m.name===name);
+    if(!isApproved){
+      // 승인 요청 화면으로 이동
+      lf.name=name;
+      loginScreen=isPending?'pending':'request';
+      render();
+      return;
+    }
+  }
+
+  // 사용자별 데이터 로드
+  const userData = loadUserData(name) || {};
+  S = {
+    user:{name,role:'member',spreadsheetId:userData.spreadsheetId||null},
+    clients: userData.clients || [],
+    visits:  userData.visits  || [],
+    cycles:  userData.cycles  || {...DEF_CYCLES},
+    drive:   userData.drive   || {connected:false,accessToken:null,expiresAt:null},
+  };
+  saveSession(S.user);
+  saveUserData(name,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});
   if(CFG.mapsKey)loadMapsScript();
   go('list');
+}
+
+function doRequestApproval(){
+  const name=lf.name;
+  if(!name)return;
+  const pending=(CFG.pendingMembers||[]).filter(m=>m.name!==name);
+  pending.push({name, requestedAt:new Date().toISOString()});
+  CFG={...CFG,pendingMembers:pending};
+  saveCfg(CFG);
+  loginScreen='pending';
+  render();
 }
 
 async function doAdminLogin(){
@@ -986,8 +1191,21 @@ async function doAdminLogin(){
   if(!pw){toast('비밀번호를 입력하세요');return;}
   const hash=await sha256(pw);
   if(hash!==CFG.adminPwHash){toast('비밀번호가 틀렸습니다');return;}
-  set({user:{name:'관리자',role:'admin',spreadsheetId:S.user?.spreadsheetId||null}});
+
+  // 관리자 데이터 로드
+  const adminName='관리자';
+  const userData = loadUserData(adminName) || {};
+  S = {
+    user:{name:adminName,role:'admin',spreadsheetId:userData.spreadsheetId||null},
+    clients: userData.clients || [],
+    visits:  userData.visits  || [],
+    cycles:  userData.cycles  || {...DEF_CYCLES},
+    drive:   userData.drive   || {connected:false,accessToken:null,expiresAt:null},
+  };
+  saveSession(S.user);
+  saveUserData(adminName,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});
   if(CFG.mapsKey)loadMapsScript();
+  render();
   go('settings');
   setTimeout(()=>toast('✓ 관리자로 로그인됐습니다'),200);
 }
@@ -1013,7 +1231,7 @@ function PageList(){
   const allWithU = [...S.clients].map(c=>({...c,u:getU(c)}));
 
   // 본인 거래처 판별: ownerName이 자신과 일치 (혹은 _shared 플래그)
-  const isMine = c => !c._shared && (c.ownerName===me || (!c.ownerName && isAdmin));
+  const isMine = c => !c._shared && (c.ownerName===me || !c.ownerName);
 
   const sorted = allWithU
     .filter(c=>{
@@ -1043,7 +1261,7 @@ function PageList(){
     <div class="hdr-row">
       <div>
         <div class="hdr-t">거래처 목록</div>
-        <div class="hdr-s">${me} · 총 ${S.clients.length}개${sharedCnt?` (공유 ${sharedCnt})`:''}</div>
+        <div class="hdr-s">${me} · 내 거래처 ${myCnt}개${sharedCnt?` · 공유 ${sharedCnt}개`:''}</div>
       </div>
       <div class="row g2">
         ${redCnt?`<span class="badge br">${redCnt}곳 위험</span>`:''}
@@ -1144,8 +1362,9 @@ function PageDetail(){
       <div class="fr"><span class="fl">주소</span>
         <span class="fv">${c.address||'<span style="color:var(--tx3)">미입력</span>'}
           <div class="row g2" style="margin-top:4px;flex-wrap:wrap">
+            <button class="btn bp bsm" style="font-size:10px" onclick="searchClientByName('${c.id}')">자동 검색</button>
             <button class="btn bs bsm" style="font-size:10px" onclick="editField('${c.id}','address','주소')">직접 입력</button>
-            ${!c.lat&&c.address?`<button class="btn bs bsm" style="font-size:10px" onclick="geocodeClient('${c.id}')">좌표 검색</button>`:''}
+            ${!c.lat&&c.address?`<button class="btn bs bsm" style="font-size:10px" onclick="geocodeClient('${c.id}')">좌표만 검색</button>`:''}
           </div>
         </span>
       </div>
@@ -1508,7 +1727,32 @@ async function doImportConfirm(){
 
   importState={...importState,importing:true,progress:'데이터 저장 중...'};render();
   set({clients:[...S.clients,...fresh]},true);
-  save(S);
+  saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});
+
+  // Google Maps Places가 로드되어 있으면 자동 주소 검색 (백그라운드)
+  if(CFG.mapsKey&&window.google?.maps?.places){
+    importState.progress=`주소 자동 검색 중... (0/${fresh.length})`;render();
+    let done=0;
+    for(const c of fresh){
+      await new Promise(resolve=>{
+        const svc=new google.maps.places.PlacesService(document.createElement('div'));
+        svc.textSearch({query:c.companyName+(c.branchName?' '+c.branchName:''),region:'kr',language:'ko'},(res,status)=>{
+          if(status===google.maps.places.PlacesServiceStatus.OK&&res[0]){
+            const loc=res[0].geometry.location;
+            const idx=S.clients.findIndex(x=>x.id===c.id);
+            if(idx>=0){
+              S.clients[idx]={...S.clients[idx],address:res[0].formatted_address||'',lat:loc.lat(),lng:loc.lng()};
+            }
+          }
+          done++;
+          importState.progress=`주소 자동 검색 중... (${done}/${fresh.length})`;
+          render();
+          setTimeout(resolve,150); // rate limit
+        });
+      });
+    }
+    saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});
+  }
 
   if(S.drive.connected){
     try{
@@ -1534,12 +1778,11 @@ async function doImportShared(){
   toast(`${name}의 거래처 불러오는 중...`);
   try{
     const ssId=await GSheets.getOrCreateSheet(name);
-    // 공유 허용 여부 먼저 체크 (방문주기 시트 첫 행에 SHARE_ENABLED 플래그 저장)
     const cycRows=await GSheets.readSheet(ssId,'방문주기!A1:B20');
     const shareRow=cycRows.find(r=>r[0]==='_SHARE_ENABLED');
     const shareEnabled=shareRow?shareRow[1]==='true':false;
     if(!shareEnabled){
-      toast(`❌ ${name}님이 거래처 공유를 허용하지 않았습니다`);
+      alert(`⚠ ${name}님이 거래처 공유를 허용하지 않았습니다.\n\n해당 팀원에게 [설정 → 내 거래처 공유 설정]을 켠 후 Sheets 저장을 요청하세요.`);
       return;
     }
     const rows=await GSheets.readSheet(ssId,'거래처목록!A2:L');
@@ -1547,13 +1790,12 @@ async function doImportShared(){
     const shared=rows.map(r=>({
       id:uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
       address:r[4]||'',contactName:r[5]||'',contactPhone:r[6]||'',
-      ownerName:name,  // 공유받은 거래처는 원래 주인 표시
+      ownerName:name,
       lastVisitDate:r[8]||null,lat:r[9]?parseFloat(r[9]):null,lng:r[10]?parseFloat(r[10]):null,
       createdAt:new Date().toISOString(),
       _shared:true, _sharedFrom:name,
     })).filter(c=>c.companyName);
 
-    // 중복 감지 (내 거래처 중 동명 거래처)
     const me=S.user?.name||'';
     const withDup=shared.map(c=>({
       ...c,
@@ -1562,8 +1804,14 @@ async function doImportShared(){
 
     const existing=S.clients.filter(c=>!(c._sharedFrom===name));
     set({clients:[...existing,...withDup]});
-    toast(`✓ ${name}의 거래처 ${withDup.length}개 공유됨 (중복 ${withDup.filter(c=>c._dup).length}개)`);
-  }catch(e){toast('오류: '+e.message);}
+    toast(`✓ ${name}의 거래처 ${withDup.length}개 공유됨`);
+  }catch(e){
+    if(/not found|404/i.test(e.message)){
+      alert(`⚠ ${name}님의 거래처 시트를 찾을 수 없습니다.\n해당 팀원이 아직 Drive에 데이터를 저장하지 않았을 수 있습니다.`);
+    }else{
+      toast('오류: '+e.message);
+    }
+  }
 }
 
 /* ── TEAM PAGE (팀원 현황) ── */
@@ -1655,19 +1903,53 @@ function PageTeam(){
   </div>`;
 }
 
-function doViewTeamMember(assignee){
-  fOwner='전체'; srchQ=''; fCat='전체'; fU='전체';
-  // 임시로 해당 담당자만 필터
-  fOwner='전체';
-  srchQ='';
-  // 직접 필터로 이동
-  go('list');
-  setTimeout(()=>{
-    fOwner='전체';
-    // assignee 이름으로 검색
-    srchQ=assignee;
-    render();
-  },50);
+async function doViewTeamMember(memberName){
+  const me=S.user?.name||'';
+  if(memberName===me){
+    fOwner='내 거래처'; srchQ=''; fCat='전체'; fU='전체';
+    go('list'); return;
+  }
+  if(!S.drive.connected){
+    alert('Drive 연결 후 다른 팀원의 거래처를 조회할 수 있습니다.');
+    return;
+  }
+  toast(`${memberName} 거래처 확인 중...`);
+  try{
+    const ssId=await GSheets.getOrCreateSheet(memberName);
+    const cycRows=await GSheets.readSheet(ssId,'방문주기!A1:B20');
+    const shareRow=cycRows.find(r=>r[0]==='_SHARE_ENABLED');
+    const shareEnabled=shareRow?shareRow[1]==='true':false;
+    if(!shareEnabled){
+      alert(`⚠ ${memberName}님의 거래처 공유가 허용되어 있지 않습니다.\n\n해당 팀원에게 [설정 → 내 거래처 공유 설정]을 켠 후\nSheets에 저장하도록 요청하세요.`);
+      return;
+    }
+    // 공유 허용된 경우: 공유 가져오기 후 목록으로 이동
+    const rows=await GSheets.readSheet(ssId,'거래처목록!A2:L');
+    if(!rows.length){toast(`${memberName}의 거래처 목록이 비어있습니다`);return;}
+    const shared=rows.map(r=>({
+      id:uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
+      address:r[4]||'',contactName:r[5]||'',contactPhone:r[6]||'',
+      ownerName:memberName,
+      lastVisitDate:r[8]||null,lat:r[9]?parseFloat(r[9]):null,lng:r[10]?parseFloat(r[10]):null,
+      createdAt:new Date().toISOString(),
+      _shared:true, _sharedFrom:memberName,
+    })).filter(c=>c.companyName);
+    const withDup=shared.map(c=>({
+      ...c,
+      _dup: S.clients.some(x=>!x._shared&&x.ownerName===me&&sim(x.companyName,c.companyName)>0.75)
+    }));
+    const existing=S.clients.filter(c=>!(c._sharedFrom===memberName));
+    set({clients:[...existing,...withDup]});
+    fOwner='공유됨'; srchQ=memberName; fCat='전체'; fU='전체';
+    go('list');
+    toast(`✓ ${memberName}의 거래처 ${withDup.length}개 표시`);
+  }catch(e){
+    if(/not found|404/i.test(e.message)){
+      alert(`⚠ ${memberName}님의 거래처 시트를 찾을 수 없습니다.`);
+    }else{
+      toast('오류: '+e.message);
+    }
+  }
 }
 
 let sc={step:0,b64:null,parsed:null,loading:false,err:null};
@@ -1872,10 +2154,66 @@ function PageSettings(){
       <button class="btn bs bsm" style="width:auto" onclick="doReclassify()">카테고리 재분류</button>
     </div>
 
+    <div class="slbl">전체 통합 시트 (관리자 전용)</div>
+    <div class="card">
+      <div style="font-size:11.5px;color:var(--tx2);margin-bottom:9px;line-height:1.7">
+        모든 팀원의 거래처·방문 기록을 한 스프레드시트에 <b>담당자별 탭</b>으로 모읍니다.<br>
+        파일명: <b>VisitLog_전체통합_하나감정평가법인</b>
+      </div>
+      ${syncProgress?`<div style="font-size:11px;color:var(--ac);padding:5px 0;text-align:center;font-family:var(--mo)">${syncProgress}</div>`:''}
+      <button class="btn bs bsm" style="width:auto" onclick="doCreateMaster()">마스터 시트 생성/갱신</button>
+    </div>
+
+    <div class="slbl">팀원 관리 (승인)</div>
+    <div class="card">
+      ${(()=>{
+        const pending=CFG.pendingMembers||[];
+        const approved=CFG.approvedMembers||[];
+        let html='';
+        if(pending.length){
+          html+='<div style="font-size:11.5px;color:var(--or);font-weight:600;margin-bottom:8px">승인 대기 ('+pending.length+'명)</div>';
+          html+=pending.map(m=>`
+          <div class="row jb" style="padding:8px 0;border-bottom:1px solid var(--bd)">
+            <div>
+              <div style="font-size:13px;font-weight:600">${m.name}</div>
+              <div style="font-size:10px;color:var(--tx3)">${new Date(m.requestedAt).toLocaleDateString('ko-KR')} 요청</div>
+            </div>
+            <div class="row g2">
+              <button class="btn bg bsm" onclick="doApproveMember('${m.name}')">수락</button>
+              <button class="btn bd2 bsm" onclick="doRejectMember('${m.name}')">거절</button>
+            </div>
+          </div>`).join('');
+        }
+        if(approved.length){
+          html+='<div style="font-size:11.5px;color:var(--gn);font-weight:600;margin:'+(pending.length?'12px 0 8px':'0 0 8px')+'">승인된 팀원 ('+approved.length+'명)</div>';
+          html+=approved.map(m=>`
+          <div class="row jb" style="padding:6px 0;border-bottom:1px solid var(--bd)">
+            <div>
+              <div style="font-size:13px">${m.name}</div>
+              <div style="font-size:10px;color:var(--tx3)">${new Date(m.addedAt).toLocaleDateString('ko-KR')} 승인</div>
+            </div>
+            <button class="btn bd2 bsm" onclick="doRemoveMember('${m.name}')">제거</button>
+          </div>`).join('');
+        }
+        if(!pending.length&&!approved.length){
+          html='<div style="font-size:12px;color:var(--tx3);text-align:center;padding:14px">아직 등록된 팀원이 없습니다</div>';
+        }
+        return html;
+      })()}
+      <div style="margin-top:12px;border-top:1px solid var(--bd);padding-top:10px">
+        <div class="il">팀원 직접 추가</div>
+        <div class="row g2">
+          <input type="text" id="add_member" placeholder="팀원 이름" style="flex:1">
+          <button class="btn bs bsm" onclick="doAddMember()">추가</button>
+        </div>
+      </div>
+    </div>
+
     <div class="slbl">데이터 관리</div>
     <div class="card">
       <div class="row g2" style="flex-wrap:wrap;margin-bottom:8px">
         <button class="btn bs bsm" onclick="doExport()">JSON 내보내기</button>
+        <button class="btn bd2 bsm" onclick="doClearClients()">거래처만 초기화</button>
         <button class="btn bd2 bsm" onclick="doClear()">전체 초기화</button>
       </div>
       <div style="font-size:10.5px;color:var(--tx3)">거래처 ${S.clients.length}개 · 방문 ${S.visits.length}건</div>
@@ -1916,7 +2254,64 @@ function PageSettings(){
 
 function doLogout(){
   if(!confirm('로그아웃 하시겠습니까?'))return;
-  set({user:null});loginScreen='select';lf={name:'',pw:'',newPw:'',newPw2:''};go('list');
+  saveSession(null);
+  S = {user:null, clients:[], visits:[], cycles:{...DEF_CYCLES}, drive:{connected:false}};
+  loginScreen='select';lf={name:'',pw:'',newPw:'',newPw2:''};
+  render();
+}
+
+function doApproveMember(name){
+  const pending=(CFG.pendingMembers||[]).filter(m=>m.name!==name);
+  const approved=(CFG.approvedMembers||[]).filter(m=>m.name!==name);
+  approved.push({name,addedAt:new Date().toISOString()});
+  CFG={...CFG,pendingMembers:pending,approvedMembers:approved};
+  saveCfg(CFG);
+  toast(`✓ ${name} 승인됨`);render();
+}
+
+function doRejectMember(name){
+  if(!confirm(`${name}의 승인 요청을 거절하시겠습니까?`))return;
+  const pending=(CFG.pendingMembers||[]).filter(m=>m.name!==name);
+  CFG={...CFG,pendingMembers:pending};saveCfg(CFG);
+  toast(`${name} 거절됨`);render();
+}
+
+function doRemoveMember(name){
+  if(!confirm(`${name}을(를) 팀원 목록에서 제거하시겠습니까?`))return;
+  const approved=(CFG.approvedMembers||[]).filter(m=>m.name!==name);
+  CFG={...CFG,approvedMembers:approved};saveCfg(CFG);
+  toast(`${name} 제거됨`);render();
+}
+
+function doAddMember(){
+  const name=document.getElementById('add_member')?.value?.trim();
+  if(!name){toast('이름을 입력하세요');return;}
+  const approved=(CFG.approvedMembers||[]).filter(m=>m.name!==name);
+  approved.push({name,addedAt:new Date().toISOString()});
+  CFG={...CFG,approvedMembers:approved};saveCfg(CFG);
+  toast(`✓ ${name} 추가됨`);render();
+}
+
+function doClearClients(){
+  if(!confirm('거래처 목록과 방문 기록을 모두 삭제합니다.\n(설정·팀원 정보는 유지됩니다) 계속하시겠습니까?'))return;
+  set({clients:[],visits:[]});
+  toast('거래처 목록이 초기화됐습니다');
+}
+
+async function doCreateMaster(){
+  if(!S.drive.connected){alert('먼저 Drive를 연결해주세요');return;}
+  if(!confirm('전체 팀원 데이터를 통합 시트로 만들거나 갱신합니다.\n계속하시겠습니까?'))return;
+  syncProgress='준비 중...';render();
+  try{
+    const r=await GSheets.createMasterSheet(p=>{syncProgress=p;render();});
+    syncProgress='';render();
+    if(confirm(`✓ 마스터 시트 생성/갱신 완료\n\n팀원 ${r.userCount}명 · 총 거래처 ${r.totalClients}개\n\n바로 열어보시겠습니까?`)){
+      window.open(`https://docs.google.com/spreadsheets/d/${r.masterId}`,'_blank');
+    }
+  }catch(e){
+    syncProgress='';render();
+    alert('마스터 시트 생성 실패:\n'+e.message);
+  }
 }
 
 function saveMapsKey(){
@@ -1956,7 +2351,21 @@ async function doSync(){
     syncProgress='';toast('✓ Sheets 저장 완료');render();
   }catch(e){syncProgress='';toast('오류: '+e.message);render();}
 }
-async function doLoad(){try{toast('불러오는 중...');await GSheets.loadMine();}catch(e){toast('오류: '+e.message);}}
+async function doLoad(){
+  syncProgress='준비 중...';render();
+  try{
+    const r=await GSheets.loadMine(p=>{syncProgress=p;render();});
+    syncProgress='';render();
+    if(r.clientCount===0){
+      alert(`✓ 시트는 정상 연결됐지만 저장된 거래처가 없습니다.\n\n먼저 [Sheets 저장] 버튼으로 데이터를 업로드한 후\n다른 기기에서 [Sheets 불러오기]를 해주세요.`);
+    }else{
+      toast(`✓ 거래처 ${r.clientCount}개, 방문 ${r.visitCount}건 불러옴`);
+    }
+  }catch(e){
+    syncProgress='';render();
+    alert('Sheets 불러오기 실패:\n'+e.message);
+  }
+}
 
 function adjCycle(cat,d){set({cycles:{...S.cycles,[cat]:Math.max(5,Math.min(365,(S.cycles[cat]||30)+d))}}); }
 
@@ -2027,7 +2436,7 @@ async function doBatchGeo(){
     }catch{}
     await new Promise(r=>setTimeout(r,500));
   }
-  save(S);render();
+  saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});render();
   toast(`✓ ${done}/${targets.length}개 좌표 등록됨`);
   if(page==='map'&&_gmap)placeMapMarkers();
 }
@@ -2091,6 +2500,55 @@ function render(){
 // ═══════════════════════════════════════════════
 // 11. INIT
 // ═══════════════════════════════════════════════
+// v4 → v5 데이터 마이그레이션 (1회 실행)
+(function migrate(){
+  try{
+    const legacyRaw = localStorage.getItem(STORAGE_LEGACY);
+    if(!legacyRaw) return;
+    const legacy = JSON.parse(legacyRaw);
+    if(!legacy?.user?.name) return;
+
+    const ownerName = legacy.user.name;
+    // 이미 새 키에 데이터가 있으면 스킵
+    if(localStorage.getItem(userKey(ownerName))) return;
+
+    // assignee → ownerName 변환
+    const migratedClients = (legacy.clients || []).map(c => {
+      const {assignee, ...rest} = c;
+      return {
+        ...rest,
+        ownerName: c.ownerName || assignee || ownerName,
+      };
+    });
+
+    // 새 사용자 키로 저장
+    saveUserData(ownerName, {
+      clients: migratedClients,
+      visits: legacy.visits || [],
+      cycles: legacy.cycles || {...DEF_CYCLES},
+      drive: legacy.drive || {connected:false},
+    });
+
+    // 세션 정보도 새 키로
+    saveSession(legacy.user);
+
+    // 현재 메모리 상태 재구성
+    S = {
+      user: legacy.user,
+      clients: migratedClients,
+      visits: legacy.visits || [],
+      cycles: legacy.cycles || {...DEF_CYCLES},
+      drive: legacy.drive || {connected:false},
+    };
+
+    // 레거시 키 삭제
+    localStorage.removeItem(STORAGE_LEGACY);
+    console.log('[VisitLog] v4 → v5 마이그레이션 완료:', migratedClients.length, '거래처');
+  }catch(e){
+    console.warn('마이그레이션 오류 (무시됨):', e);
+  }
+})();
+
 if(CFG.mapsKey)loadMapsScript();
 render();
 </script>
