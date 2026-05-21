@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>VisitLog — 하나감정평가법인</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<meta name="theme-color" content="#0D1B2A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="VisitLog">
+<link rel="manifest" href="data:application/json,%7B%22name%22%3A%22VisitLog%20%ED%95%98%EB%82%98%EA%B0%90%EC%A0%95%22%2C%22short_name%22%3A%22VisitLog%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230D1B2A%22%2C%22theme_color%22%3A%22%230D1B2A%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%2520xmlns%3D%2527http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%2527%2520viewBox%3D%25270%25200%252048%252048%2527%253E%253Crect%2520width%3D%252748%2527%2520height%3D%252748%2527%2520rx%3D%252712%2527%2520fill%3D%2527%25230D1B2A%2527%2F%253E%253Ccircle%2520cx%3D%252724%2527%2520cy%3D%252720%2527%2520r%3D%25276%2527%2520fill%3D%2527%25233B9EFF%2527%2F%253E%253Cpath%2520d%3D%252712%252032c0-6%25204-10%252010-10h4c6%25200%252010%25204%252010%252010%2527%2520fill%3D%2527%25233B9EFF%2527%2F%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22192x192%22%7D%5D%7D">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 
@@ -149,6 +154,8 @@ select option{background:var(--bg3)}
 @keyframes ti{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
 @keyframes to2{to{opacity:0;transform:translateX(-50%) translateY(8px)}}
 
+/* 오프라인 배너 */
+.offline-banner{position:fixed;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;background:var(--or);color:#fff;font-size:11.5px;font-weight:600;text-align:center;padding:7px 14px;z-index:9999;letter-spacing:.03em}
 /* Empty */
 .empty{text-align:center;padding:56px 28px;color:var(--tx3)}
 .empty h3{font-size:14px;color:var(--tx2);margin:10px 0 6px} .empty p{font-size:12px;line-height:1.65}
@@ -187,8 +194,9 @@ select option{background:var(--bg3)}
 // ═══════════════════════════════════════════════
 // 0. CONFIG
 // ═══════════════════════════════════════════════
-const GEMINI_KEY   = 'AIzaSyAWPlv5ImLEHPeARwPcbPFTGg0QRN7yZPg';
 const GEMINI_MODEL = 'gemini-2.0-flash';
+// Gemini 키는 관리자 설정(CFG.geminiKey)으로 관리 — 하드코딩 금지
+const GEMINI_KEY_FALLBACK = ''; // 비워둠: 설정 화면에서 직접 입력
 const STORAGE_PREFIX = 'vl_hana_v5_user_';  // 사용자별 데이터 분리
 const STORAGE_LEGACY = 'vl_hana_v4';         // 마이그레이션용
 const CFG_KEY      = 'vl_hana_cfg';          // 전역 설정 (관리자가 설정, 모두 공유)
@@ -219,6 +227,7 @@ const _cfg = loadCfg() || {};
 let CFG = {
   driveClientId: _cfg.driveClientId || '',
   mapsKey:       _cfg.mapsKey       || '',
+  geminiKey:     _cfg.geminiKey     || '',  // Gemini API 키 (관리자 설정)
   adminPwHash:   _cfg.adminPwHash   || '',
   // 팀원 관리 (관리자가 추가/승인)
   approvedMembers:  _cfg.approvedMembers  || [],
@@ -452,7 +461,9 @@ const Gem={
     const parts=[];
     if(b64)parts.push({inlineData:{mimeType:mime,data:b64}});
     parts.push({text:prompt});
-    const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,{
+    const gemKey=CFG.geminiKey||GEMINI_KEY_FALLBACK;
+    if(!gemKey)throw new Error('Gemini API 키가 설정되지 않았습니다.\n[설정 → Gemini API 키]에서 입력해주세요.');
+    const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${gemKey}`,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.1,maxOutputTokens:1500}}),
     });
@@ -735,7 +746,7 @@ function loadMapsScript(){
   if(!key||document.getElementById('gmaps-script'))return;
   const s=document.createElement('script');
   s.id='gmaps-script';
-  s.src=`https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=onMapsLoaded&language=ko&region=KR`;
+  s.src=`https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&v=beta&callback=onMapsLoaded&language=ko&region=KR`;
   s.async=true;s.defer=true;
   document.head.appendChild(s);
 }
@@ -954,6 +965,32 @@ async function searchClientByName(id){
 
   toast('거래처 정보 검색 중...');
   const query=c.companyName+(c.branchName?' '+c.branchName:'');
+
+  // 신규 Places API (v=beta) 우선 사용
+  if(google.maps.places.Place?.searchByText){
+    try{
+      const {places}=await google.maps.places.Place.searchByText({
+        textQuery: query,
+        fields: ['displayName','formattedAddress','location'],
+        language: 'ko-KR',
+        region: 'kr',
+      });
+      if(places?.length){
+        const p=places[0];
+        set({clients:S.clients.map(x=>x.id===id?{
+          ...x,
+          address: p.formattedAddress||x.address,
+          lat: p.location.lat(),
+          lng: p.location.lng(),
+        }:x)});
+        toast('✓ 주소 + 좌표 등록됨');
+        if(page==='map'&&_gmap)placeMapMarkers();
+      }else{ toast('검색 결과 없음'); }
+      return;
+    }catch(e){ console.warn('신규 Places API 실패, 구버전 fallback:', e); }
+  }
+
+  // 구버전 fallback (PlacesService)
   const svc=new google.maps.places.PlacesService(document.createElement('div'));
   svc.textSearch({query, region:'kr', language:'ko'}, (res,status)=>{
     if(status===google.maps.places.PlacesServiceStatus.OK && res[0]){
@@ -967,9 +1004,7 @@ async function searchClientByName(id){
       }:x)});
       toast('✓ 주소 + 좌표 등록됨');
       if(page==='map'&&_gmap)placeMapMarkers();
-    }else{
-      toast(`검색 결과 없음 (${status})`);
-    }
+    }else{ toast(`검색 결과 없음 (${status})`); }
   });
 }
 
@@ -979,7 +1014,7 @@ async function geocodeClient(id){
   // 주소가 없으면 거래처명으로 자동 검색
   if(!c.address){
     if(CFG.mapsKey&&window.google?.maps?.places){
-      return searchClientByName(id);
+      return searchClientByName(id); // searchClientByName이 신규/구버전 자동 처리
     }
     toast('주소 정보가 없습니다');return;
   }
@@ -1143,7 +1178,8 @@ function PageLogin(){
 }
 
 function doMemberLogin(){
-  const name=document.getElementById('ln')?.value?.trim();
+  // pending 화면 재시도 등 input이 없는 경우 lf.name 으로 fallback
+  const name=(document.getElementById('ln')?.value?.trim())||lf.name;
   if(!name){toast('담당자 이름을 입력하세요');return;}
 
   // 관리자 설정 완료 후에는 승인 체크
@@ -1167,9 +1203,10 @@ function doMemberLogin(){
     visits:  userData.visits  || [],
     cycles:  userData.cycles  || {...DEF_CYCLES},
     drive:   userData.drive   || {connected:false,accessToken:null,expiresAt:null},
+    shareEnabled: userData.shareEnabled ?? false,  // ← Bug fix: shareEnabled 초기화 누락
   };
   saveSession(S.user);
-  saveUserData(name,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive});
+  saveUserData(name,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
   if(CFG.mapsKey)loadMapsScript();
   go('list');
 }
@@ -1200,6 +1237,7 @@ async function doAdminLogin(){
     visits:  userData.visits  || [],
     cycles:  userData.cycles  || {...DEF_CYCLES},
     drive:   userData.drive   || {connected:false,accessToken:null,expiresAt:null},
+    shareEnabled: userData.shareEnabled ?? false,  // ← Bug fix: shareEnabled 초기화 누락
   };
   saveSession(S.user);
   saveUserData(adminName,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
@@ -1779,22 +1817,39 @@ async function doImportConfirm(){
     importState.progress=`주소 자동 검색 중... (0/${fresh.length})`;render();
     let done=0;
     for(const c of fresh){
-      await new Promise(resolve=>{
-        const svc=new google.maps.places.PlacesService(document.createElement('div'));
-        svc.textSearch({query:c.companyName+(c.branchName?' '+c.branchName:''),region:'kr',language:'ko'},(res,status)=>{
-          if(status===google.maps.places.PlacesServiceStatus.OK&&res[0]){
-            const loc=res[0].geometry.location;
-            const idx=S.clients.findIndex(x=>x.id===c.id);
-            if(idx>=0){
-              S.clients[idx]={...S.clients[idx],address:res[0].formatted_address||'',lat:loc.lat(),lng:loc.lng()};
+      // 신규 Places API 우선, fallback은 구버전
+      await (async()=>{
+        try{
+          if(google.maps.places.Place?.searchByText){
+            const {places}=await google.maps.places.Place.searchByText({
+              textQuery:c.companyName+(c.branchName?' '+c.branchName:''),
+              fields:['displayName','formattedAddress','location'],
+              language:'ko-KR', region:'kr',
+            });
+            if(places?.length){
+              const p=places[0];
+              const idx=S.clients.findIndex(x=>x.id===c.id);
+              if(idx>=0) S.clients[idx]={...S.clients[idx],address:p.formattedAddress||'',lat:p.location.lat(),lng:p.location.lng()};
             }
+          } else {
+            await new Promise(resolve=>{
+              const svc=new google.maps.places.PlacesService(document.createElement('div'));
+              svc.textSearch({query:c.companyName+(c.branchName?' '+c.branchName:''),region:'kr',language:'ko'},(res,status)=>{
+                if(status===google.maps.places.PlacesServiceStatus.OK&&res[0]){
+                  const loc=res[0].geometry.location;
+                  const idx=S.clients.findIndex(x=>x.id===c.id);
+                  if(idx>=0) S.clients[idx]={...S.clients[idx],address:res[0].formatted_address||'',lat:loc.lat(),lng:loc.lng()};
+                }
+                resolve();
+              });
+            });
           }
-          done++;
-          importState.progress=`주소 자동 검색 중... (${done}/${fresh.length})`;
-          render();
-          setTimeout(resolve,150); // rate limit
-        });
-      });
+        }catch(e){ console.warn('Places 검색 오류 (스킵):', c.companyName, e); }
+      })();
+      done++;
+      importState.progress=`주소 자동 검색 중... (${done}/${fresh.length})`;
+      render();
+      await new Promise(r=>setTimeout(r,120)); // rate limit
     }
     saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
   }
@@ -2165,6 +2220,23 @@ function PageSettings(){
       </div>
     </div>
 
+    <div class="slbl">Gemini API 키</div>
+    <div class="card">
+      <div class="ig"><label class="il">Gemini API 키 (명함 OCR · AI 주소검색)</label>
+        <input type="password" id="s_gk" value="${CFG.geminiKey}" placeholder="AIza...">
+      </div>
+      <div class="row g2" style="flex-wrap:wrap;align-items:center">
+        <button class="btn bs bsm" style="width:auto" onclick="saveGeminiKey()">저장</button>
+        ${CFG.geminiKey
+          ? '<span style="font-size:10.5px;color:var(--gn)">✓ 키 설정됨</span>'
+          : '<span style="font-size:10.5px;color:var(--or)">⚠ 미설정 — 명함 OCR·AI 기능 비활성화</span>'}
+      </div>
+      <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.8">
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--ac)">Google AI Studio</a>에서 무료 발급<br>
+        무료 티어: 분당 15회 · 일 1,500회 한도 (초과 시 잠시 대기)
+      </div>
+    </div>
+
     <div class="slbl">📲 모바일 기기에 설정 공유</div>
     <div class="card">
       <div style="font-size:11.5px;color:var(--tx2);margin-bottom:10px;line-height:1.7">
@@ -2405,6 +2477,13 @@ function saveMapsKey(){
   toast('✓ Maps API 키 저장됨');
 }
 
+function saveGeminiKey(){
+  const key=document.getElementById('s_gk')?.value?.trim()||'';
+  CFG={...CFG,geminiKey:key};saveCfg(CFG);
+  toast(key?'✓ Gemini API 키 저장됨':'Gemini 키가 삭제됐습니다');
+  render();
+}
+
 async function doChangePw(){
   const cur=document.getElementById('pw_cur')?.value||'';
   const nw=document.getElementById('pw_new')?.value||'';
@@ -2428,11 +2507,21 @@ async function doConnect(){
 }
 
 async function doSync(){
+  if(!isOnline()){
+    enqueueOfflineSync('sync');
+    toast('📡 오프라인 — 온라인 복귀 시 자동 저장됩니다');
+    return;
+  }
   syncProgress='준비 중...';render();
   try{
     await GSheets.syncAll(p=>{syncProgress=p;render();});
     syncProgress='';toast('✓ Sheets 저장 완료');render();
-  }catch(e){syncProgress='';toast('오류: '+e.message);render();}
+  }catch(e){
+    syncProgress='';render();
+    // 네트워크 오류면 큐에 등록
+    if(/network|fetch|failed/i.test(e.message)){ enqueueOfflineSync('sync'); toast('⚠ 저장 실패 — 온라인 복귀 시 재시도 예정'); }
+    else toast('오류: '+e.message);
+  }
 }
 async function doLoad(){
   syncProgress='준비 중...';render();
@@ -2488,6 +2577,7 @@ function makeConfigLink(){
   const data={};
   if(CFG.driveClientId) data.cid=CFG.driveClientId;
   if(CFG.mapsKey) data.mk=CFG.mapsKey;
+  if(CFG.geminiKey) data.gk=CFG.geminiKey;
   const b64=encodeURIComponent(btoa(JSON.stringify(data)));
   const base=window.location.origin+window.location.pathname;
   return `${base}?cfg=${b64}`;
@@ -2626,7 +2716,55 @@ function render(){
 // ═══════════════════════════════════════════════
 // 11. INIT
 // ═══════════════════════════════════════════════
-// URL 파라미터로 설정 자동 적용 (모바일 공유용)
+
+// ── PWA: 오프라인 감지 + Sync 재시도 큐 ────────────────────
+const OFFLINE_QUEUE_KEY = 'vl_hana_offline_queue';
+
+function isOnline(){ return navigator.onLine; }
+
+// 오프라인 배너 표시/숨김
+function updateOfflineBanner(){
+  let banner=document.getElementById('offline-banner');
+  if(!isOnline()){
+    if(!banner){
+      banner=document.createElement('div');
+      banner.id='offline-banner';
+      banner.className='offline-banner';
+      banner.textContent='📡 오프라인 상태 — 데이터는 기기에 저장됩니다. 온라인 복귀 시 자동 동기화됩니다.';
+      document.body.prepend(banner);
+    }
+  } else {
+    if(banner) banner.remove();
+    // 온라인 복귀 시 큐에 남은 sync 작업 처리
+    retryOfflineQueue();
+  }
+}
+
+// Sync 실패 시 큐에 적재 (재시도 대상: 'sync' | 'visit')
+function enqueueOfflineSync(type='sync'){
+  try{
+    const q=JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY)||'[]');
+    if(!q.includes(type)){ q.push(type); localStorage.setItem(OFFLINE_QUEUE_KEY,JSON.stringify(q)); }
+  }catch{}
+}
+
+// 온라인 복귀 시 큐 소비
+async function retryOfflineQueue(){
+  if(!S.user||!S.drive?.connected) return;
+  try{
+    const q=JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY)||'[]');
+    if(!q.length) return;
+    localStorage.removeItem(OFFLINE_QUEUE_KEY);
+    toast('📡 온라인 복귀 — 저장 중...');
+    await GSheets.syncAll();
+    toast('✓ 오프라인 데이터 동기화 완료');
+  }catch(e){ console.warn('오프라인 큐 재시도 실패:', e); }
+}
+
+window.addEventListener('online',  ()=>{ updateOfflineBanner(); });
+window.addEventListener('offline', ()=>{ updateOfflineBanner(); });
+
+// ── URL 파라미터로 설정 자동 적용 (모바일 공유용)
 (function applyURLConfig(){
   try{
     const params=new URLSearchParams(window.location.search);
@@ -2639,6 +2777,9 @@ function render(){
     }
     if(decoded.mk && decoded.mk!==CFG.mapsKey){
       CFG={...CFG,mapsKey:decoded.mk};changed.push('Maps API 키');
+    }
+    if(decoded.gk && decoded.gk!==CFG.geminiKey){
+      CFG={...CFG,geminiKey:decoded.gk};changed.push('Gemini API 키');
     }
     if(changed.length){
       saveCfg(CFG);
@@ -2701,6 +2842,7 @@ function render(){
 })();
 
 if(CFG.mapsKey)loadMapsScript();
+updateOfflineBanner(); // 초기 오프라인 상태 체크
 render();
 </script>
 </body>
