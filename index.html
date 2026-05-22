@@ -1012,49 +1012,69 @@ function PageLogin(){
   return '';
 }
 
-function doMemberLogin(){
-  // pending 화면 재시도 등 input이 없는 경우 lf.name 으로 fallback
+async function doMemberLogin(){
   const name=(document.getElementById('ln')?.value?.trim())||lf.name;
   if(!name){toast('담당자 이름을 입력하세요');return;}
 
-  // 관리자 설정 완료 후에는 승인 체크
-  if(CFG.gasUrl){
-    const isApproved = (CFG.approvedMembers||[]).some(m=>m.name===name);
-    const isPending  = (CFG.pendingMembers||[]).some(m=>m.name===name);
-    if(!isApproved){
-      // 승인 요청 화면으로 이동
-      lf.name=name;
-      loginScreen=isPending?'pending':'request';
-      render();
-      return;
-    }
+  if(!CFG.gasUrl){
+    // GAS 미설정 — 로컬 전용 모드
+    _loginAsLocalMember(name); return;
   }
+  lf.name=name;
+  loginScreen='checking'; render();
+  try{
+    const res = await API.checkMember(name);
+    if(res.status==='approved'||res.status==='admin'){
+      _loginAsLocalMember(name);
+    } else if(res.status==='pending'){
+      loginScreen='pending'; render();
+    } else {
+      loginScreen='request'; render();
+    }
+  }catch(e){
+    // 서버 오류 시 로컬 캐시된 승인 목록으로 폴백
+    try{
+      const cached=JSON.parse(localStorage.getItem('vl_hana_approved_cache')||'[]');
+      if(cached.includes(name)){
+        toast('⚠ 서버 연결 실패 — 오프라인 모드로 진입합니다');
+        _loginAsLocalMember(name); return;
+      }
+    }catch{}
+    toast('⚠ 서버에 연결할 수 없습니다. 잠시 후 다시 시도하세요.');
+    loginScreen='select'; render();
+  }
+}
 
-  // 사용자별 데이터 로드
+function _loginAsLocalMember(name){
   const userData = loadUserData(name) || {};
   S = {
-    user:{name,role:'member',spreadsheetId:userData.spreadsheetId||null},
+    user:{name,role:'member'},
     clients: userData.clients || [],
     visits:  userData.visits  || [],
     cycles:  userData.cycles  || {...DEF_CYCLES},
-    drive:   userData.drive   || {connected:false,accessToken:null,expiresAt:null},
-    shareEnabled: userData.shareEnabled ?? false,  // ← Bug fix: shareEnabled 초기화 누락
+    synced:  userData.synced  || false,
+    syncedAt: null,
+    shareEnabled: userData.shareEnabled ?? false,
   };
   saveSession(S.user);
-  saveUserData(name,{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
   if(CFG.mapsKey)loadMapsScript();
   go('list');
+  if(CFG.gasUrl) setTimeout(()=>doLoad(true), 600);
 }
 
-function doRequestApproval(){
+async function doRequestApproval(){
   const name=lf.name;
   if(!name)return;
-  const pending=(CFG.pendingMembers||[]).filter(m=>m.name!==name);
-  pending.push({name, requestedAt:new Date().toISOString()});
-  CFG={...CFG,pendingMembers:pending};
-  saveCfg(CFG);
-  loginScreen='pending';
-  render();
+  if(!CFG.gasUrl){loginScreen='pending';render();return;}
+  loginScreen='checking'; render();
+  try{
+    await API.requestMember(name);
+    loginScreen='pending'; render();
+    toast('✓ 승인 요청이 전송됐습니다');
+  }catch(e){
+    loginScreen='request'; render();
+    toast('요청 실패: '+e.message);
+  }
 }
 
 async function doAdminLogin(){
@@ -1067,15 +1087,15 @@ async function doAdminLogin(){
   const adminName='관리자';
   const userData = loadUserData(adminName) || {};
   S = {
-    user:{name:adminName,role:'admin',spreadsheetId:userData.spreadsheetId||null},
+    user:{name:adminName,role:'admin'},
     clients: userData.clients || [],
     visits:  userData.visits  || [],
     cycles:  userData.cycles  || {...DEF_CYCLES},
-    drive:   userData.drive   || {connected:false,accessToken:null,expiresAt:null},
-    shareEnabled: userData.shareEnabled ?? false,  // ← Bug fix: shareEnabled 초기화 누락
+    synced:  userData.synced  || false,
+    syncedAt: null,
+    shareEnabled: userData.shareEnabled ?? false,
   };
   saveSession(S.user);
-  saveUserData(adminName,{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
   if(CFG.mapsKey)loadMapsScript();
   render();
   go('team');  // 관리자는 팀원 현황 화면으로
@@ -2236,7 +2256,11 @@ async function doAddMember(){
 
 let _cachedMembers={approved:[],pending:[]};
 async function _refreshMembers(){
-  try{_cachedMembers=await API.getMembers();}catch(e){}
+  try{
+    _cachedMembers=await API.getMembers();
+    const names=(_cachedMembers.approved||[]).map(m=>m.name);
+    localStorage.setItem('vl_hana_approved_cache', JSON.stringify(names));
+  }catch(e){ console.warn('팀원 목록 로드 실패:', e.message); }
   render();
 }
 
