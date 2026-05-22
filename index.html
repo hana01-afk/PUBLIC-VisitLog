@@ -650,7 +650,12 @@ function initDetailMap(c){
 // 6. ROUTER
 // ═══════════════════════════════════════════════
 let page='list',pageParam=null;
-function go(p,param=null){page=p;pageParam=param;window.scrollTo(0,0);render();}
+function go(p,param=null){
+  page=p;pageParam=param;window.scrollTo(0,0);render();
+  if(p==="settings"&&S?.user?.role==="admin"&&CFG.gasUrl){
+    setTimeout(()=>_refreshMembers(),300);
+  }
+}
 
 // ═══════════════════════════════════════════════
 // 7. GPS
@@ -1100,6 +1105,7 @@ async function doAdminLogin(){
   render();
   go('team');  // 관리자는 팀원 현황 화면으로
   setTimeout(()=>toast('✓ 관리자로 로그인됐습니다'),200);
+  if(CFG.gasUrl) setTimeout(()=>_refreshMembers(), 400); // 팀원 목록 자동 로드
 }
 
 async function doSetAdminPw(){
