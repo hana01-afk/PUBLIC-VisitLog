@@ -1975,7 +1975,28 @@ function PageScan(){
     </div>
   </div>`;
 }
-function onCardFile(input){const f=input.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{sc={step:1,b64:e.target.result.split(',')[1],parsed:null,loading:false,err:null};render();};r.readAsDataURL(f);}
+function onCardFile(input){
+  const f=input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    // 카메라 원본(수MB) → 800px / JPEG 0.82 압축 후 전송
+    const img=new Image();
+    img.onload=()=>{
+      const MAX=800;
+      let w=img.width,h=img.height;
+      if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
+      const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+      cv.getContext('2d').drawImage(img,0,0,w,h);
+      const compressed=cv.toDataURL('image/jpeg',0.82).split(',')[1];
+      const origKB=Math.round(e.target.result.length*0.75/1024);
+      const compKB=Math.round(compressed.length*0.75/1024);
+      console.log(`명함 압축: ${origKB}KB → ${compKB}KB (${w}×${h}px)`);
+      sc={step:1,b64:compressed,parsed:null,loading:false,err:null};render();
+    };
+    img.src=e.target.result;
+  };
+  r.readAsDataURL(f);
+}
 async function doScanAI(){sc={...sc,loading:true,err:null};render();try{const p=await Gem.card(sc.b64);sc={...sc,step:2,parsed:p,loading:false};}catch(e){sc={...sc,loading:false,err:e.message};}render();}
 function saveCardC(){
   const name=document.getElementById('f_co')?.value?.trim();if(!name){toast('회사명을 입력하세요');return;}
