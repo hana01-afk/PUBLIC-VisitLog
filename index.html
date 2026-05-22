@@ -463,18 +463,28 @@ const Gem={
     parts.push({text:prompt});
     const gemKey=CFG.geminiKey||GEMINI_KEY_FALLBACK;
     if(!gemKey)throw new Error('Gemini API 키가 설정되지 않았습니다.\n[설정 → Gemini API 키]에서 입력해주세요.');
-    const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${gemKey}`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.1,maxOutputTokens:1500}}),
-    });
+    // v1beta → v1 (엔터프라이즈 키 호환)
+    const _callOnce = async () => fetch(
+      `https://generativelanguage.googleapis.com/v1/models/${GEMINI_MODEL}:generateContent?key=${gemKey}`,
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.1,maxOutputTokens:1500}})}
+    );
+    let res = await _callOnce();
+    // 429 RPM 초과 시 자동 재시도 1회
+    if(res.status===429){
+      const e429=await res.json().catch(()=>({}));
+      const msg429=e429?.error?.message||'';
+      const retryMatch=msg429.match(/retry in ([\d.]+)s/i);
+      const waitSec=retryMatch?Math.ceil(parseFloat(retryMatch[1])):15;
+      toast(`잠시 후 자동 재시도합니다 (${waitSec}초)...`);
+      await new Promise(r=>setTimeout(r, waitSec*1000+500));
+      res = await _callOnce();
+    }
     if(!res.ok){
       const e=await res.json().catch(()=>({}));
       const msg=e?.error?.message||'';
-      // 쿼터 초과 시 사용자 친화적 메시지
       if(res.status===429||msg.includes('quota')||msg.includes('RESOURCE_EXHAUSTED')){
-        const retryMatch=msg.match(/retry in ([\d.]+)s/i);
-        const wait=retryMatch?Math.ceil(parseFloat(retryMatch[1]))+'초':'잠시';
-        throw new Error(`Gemini API 일일 한도 초과\n${wait} 후 다시 시도하거나,\nAI Studio(aistudio.google.com)에서\n유료 플랜을 확인해주세요`);
+        throw new Error('Gemini API 요청이 일시적으로 제한됐습니다.\n잠시 후 다시 시도해주세요.\n(분당 요청 한도 초과)');
       }
       throw new Error(msg||`Gemini 오류(${res.status})`);
     }
@@ -1323,9 +1333,16 @@ function editCategory(clientId){
   document.body.appendChild(overlay);
 }
 
+// 거래처 변경 후 자동 서버 동기화
+async function _autoSync(msg='✓ 저장됨'){
+  if(!CFG.gasUrl){toast(msg);return;}
+  try{await API.save();toast(msg+' + 서버 동기화');}
+  catch{toast(msg+' (서버 동기화 실패)');}
+}
+
 function setCategory(clientId, newCat){
   set({clients:S.clients.map(x=>x.id===clientId?{...x,category:newCat}:x)});
-  toast(`✓ "${newCat}"로 변경됨`);
+  _autoSync(`✓ "${newCat}"로 변경됨`);
 }
 
 function editField(clientId, field, label){
@@ -1334,12 +1351,13 @@ function editField(clientId, field, label){
   const val=prompt(label+' 입력:',cur);
   if(val===null)return;
   set({clients:S.clients.map(x=>x.id===clientId?{...x,[field]:val.trim()}:x)});
-  toast('✓ '+label+' 수정됨');
+  _autoSync('✓ '+label+' 수정됨');
 }
 function delClient(id){
   if(!confirm('삭제하시겠습니까?'))return;
   set({clients:S.clients.filter(c=>c.id!==id),visits:S.visits.filter(v=>v.clientId!==id)});
-  go('list');toast('삭제됐습니다');
+  go('list');
+  _autoSync('삭제됐습니다');
 }
 
 /* ── VISIT ── */
@@ -1966,7 +1984,7 @@ function saveCardC(){
     category:document.getElementById('f_cat')?.value||'일반기업',contactName:document.getElementById('f_cn')?.value?.trim()||'',
     contactPhone:document.getElementById('f_cp')?.value?.trim()||'',address:addr,
     ownerName:S.user?.name||'',lastVisitDate:null,lat:null,lng:null,createdAt:new Date().toISOString()};
-  set({clients:[...S.clients,c]});resetScan();toast('✓ 거래처 등록됨');
+  set({clients:[...S.clients,c]});resetScan();_autoSync('✓ 거래처 등록됨');
   if(addr)setTimeout(()=>geocodeClient(c.id),500);
   go('detail',c.id);
 }
@@ -1977,7 +1995,7 @@ function saveManual(){
     category:document.getElementById('m_cat')?.value||'일반기업',contactName:document.getElementById('m_cn')?.value?.trim()||'',
     contactPhone:document.getElementById('m_cp')?.value?.trim()||'',address:addr,
     ownerName:S.user?.name||'',lastVisitDate:null,lat:null,lng:null,createdAt:new Date().toISOString()};
-  set({clients:[...S.clients,c]});toast('✓ 거래처 등록됨');
+  set({clients:[...S.clients,c]});_autoSync('✓ 거래처 등록됨');
   if(addr)setTimeout(()=>geocodeClient(c.id),500);
   go('detail',c.id);
 }
