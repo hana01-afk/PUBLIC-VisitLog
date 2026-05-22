@@ -494,12 +494,11 @@ const Gem={
     return txt;
   },
   async card(b64){
-    const raw=await this.call(`이 명함 이미지를 분석하여 순수 JSON만 출력하세요 (마크다운, 설명 금지):
-{"companyName":"회사명","branchName":"지점명(없으면 빈문자열)","contactName":"담당자명",
-"contactPhone":"전화번호","address":"주소(없으면 빈문자열)","email":"이메일(없으면 빈문자열)",
-"position":"직책(없으면 빈문자열)",
-"category":"다음 중 하나만: 제1금융권|제2금융권/단위조합|공공기관/특수기관|증권사/보험사|일반기업"}`,b64);
-    return JSON.parse(raw.replace(/```json|```/g,'').trim());
+    // GAS 서버 경유 OCR (API 키 노출 없음, 서버사이드 재시도 포함)
+    if(!CFG.gasUrl) throw new Error('GAS 서버 URL이 설정되지 않았습니다.\n[설정 → GAS 서버 URL]을 먼저 입력해주세요.');
+    const res = await API.call('ocrCard', {image: b64, mime: 'image/jpeg'});
+    if(!res.parsed) throw new Error('명함 인식 결과를 파싱할 수 없습니다.\n더 선명한 사진으로 다시 시도해주세요.');
+    return res.parsed;
   },
   async geocode(addr){
     const raw=await this.call(`다음 주소의 위도와 경도를 JSON으로만 답하세요 (설명 없이, 숫자 정밀도 소수점 4자리):
@@ -2092,12 +2091,13 @@ function PageSettings(){
       <div class="row g2" style="flex-wrap:wrap;align-items:center">
         <button class="btn bs bsm" style="width:auto" onclick="saveGeminiKey()">저장</button>
         ${CFG.geminiKey
-          ? '<span style="font-size:10.5px;color:var(--gn)">✓ 키 설정됨</span>'
-          : '<span style="font-size:10.5px;color:var(--or)">⚠ 미설정 — 명함 OCR·AI 기능 비활성화</span>'}
+          ? '<span style="font-size:10.5px;color:var(--gn)">✓ 키 설정됨 (AI 주소검색용)</span>'
+          : '<span style="font-size:10.5px;color:var(--or)">⚠ 미설정 — AI 주소검색 비활성화</span>'}
       </div>
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.8">
-        <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--ac)">Google AI Studio</a>에서 무료 발급<br>
-        무료 티어: 분당 15회 · 일 1,500회 한도 (초과 시 잠시 대기)
+        📌 <b style="color:var(--tx2)">명함 OCR은 GAS 서버에서 처리</b>됩니다 (더 안정적)<br>
+        GAS 스크립트 속성에 <b style="color:var(--ac)">GEMINI_KEY</b> 를 등록해주세요<br>
+        <span style="color:var(--tx3)">script.google.com → 프로젝트 설정 → 스크립트 속성 → 속성 추가</span>
       </div>
     </div>
 
