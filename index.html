@@ -507,236 +507,65 @@ const Gem={
 };
 
 // ═══════════════════════════════════════════════
-// 4. GOOGLE DRIVE + SHEETS API
+// 4. GAS (Google Apps Script) API
 // ═══════════════════════════════════════════════
-const GSheets={
-  tok(){
-    if(S.drive.accessToken&&Date.now()<S.drive.expiresAt)return S.drive.accessToken;
-    return null;
-  },
-  async req(url,opts={}){
-    const t=this.tok();if(!t)throw new Error('Drive 재연결이 필요합니다');
-    const res=await fetch(url,{...opts,headers:{'Authorization':`Bearer ${t}`,'Content-Type':'application/json',...(opts.headers||{})}});
-    if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e?.error?.message||`Sheets오류(${res.status})`);}
-    return res.json();
-  },
-
-  async connect(clientId){
-    return new Promise((ok,fail)=>{
-      if(!window.google?.accounts?.oauth2){fail(new Error('GIS 로딩 중입니다. 잠시 후 다시 시도하세요'));return;}
-      google.accounts.oauth2.initTokenClient({
-        client_id:clientId,
-        scope:'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file',
-        callback:r=>{
-          if(r.error){fail(new Error(r.error));return;}
-          set({drive:{...S.drive,connected:true,accessToken:r.access_token,expiresAt:Date.now()+r.expires_in*1000}});
-          ok();
-        },
-      }).requestAccessToken();
-    });
+// 하나감정평가법인 구글 계정의 GAS Web App을 단일 백엔드로 사용.
+// 사용자 개인 OAuth 불필요 — 이름 기반 인증.
+const API = {
+  async call(action, data={}) {
+    const url = CFG.gasUrl;
+    if (!url) throw new Error('서버 URL이 설정되지 않았습니다.\n관리자 설정 화면에서 GAS URL을 입력하세요.');
+    const payload = JSON.stringify({action, user: S.user?.name || '', ...data});
+    const res = await fetch(url, {method:'POST', headers:{'Content-Type':'text/plain'}, body:payload});
+    if (!res.ok) throw new Error('서버 오류 (HTTP ' + res.status + ')');
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || '서버 오류');
+    return json.data;
   },
 
-  // 담당자별 스프레드시트 생성 or 기존 파일 찾기
-  async getOrCreateSheet(assignee){
-    const name=`VisitLog_${assignee}_하나감정평가법인`;
-    // Drive에서 동명 파일 검색
-    const q=encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`);
-    const list=await this.req(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
-    if(list.files.length)return list.files[0].id;
-    // 없으면 새로 생성 (3개 탭)
-    const ss=await this.req('https://sheets.googleapis.com/v4/spreadsheets',{
-      method:'POST',
-      body:JSON.stringify({
-        properties:{title:name,locale:'ko_KR'},
-        sheets:[
-          {properties:{sheetId:0,title:'거래처목록',index:0}},
-          {properties:{sheetId:1,title:'방문기록',  index:1}},
-          {properties:{sheetId:2,title:'방문주기',  index:2}},
-        ],
-      }),
-    });
-    const ssId=ss.spreadsheetId;
-    // 헤더 초기화
-    await this.batchUpdate(ssId,[
-      {range:'거래처목록!A1',values:[CLIENT_HEADERS]},
-      {range:'방문기록!A1',  values:[VISIT_HEADERS]},
-      {range:'방문주기!A1',  values:[CYCLE_HEADERS]},
-    ]);
-    // 헤더 Bold 서식
-    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}:batchUpdate`,{
-      method:'POST',
-      body:JSON.stringify({requests:[0,1,2].map(si=>({
-        repeatCell:{
-          range:{sheetId:si,startRowIndex:0,endRowIndex:1,startColumnIndex:0,endColumnIndex:12},
-          cell:{userEnteredFormat:{textFormat:{bold:true},backgroundColor:{red:.13,green:.22,blue:.32}}},
-          fields:'userEnteredFormat(textFormat,backgroundColor)',
-        },
-      }))}),
-    });
-    return ssId;
+  async ping() { return this.call('ping'); },
+
+  // 거래처+방문기록 저장
+  async save(onProgress) {
+    const me = S.user?.name || '';
+    onProgress && onProgress(me + ' 데이터 저장 중...');
+    const myClients = S.clients.filter(c => !c._shared && (c.ownerName === me || !c.ownerName));
+    const myVisits  = S.visits.filter(v => myClients.some(c => c.id === v.clientId));
+    await this.call('saveClients', {clients: myClients, visits: myVisits, cycles: S.cycles, shareEnabled: S.shareEnabled});
+    const now = new Date().toISOString();
+    S.synced = true; S.syncedAt = now;
+    saveUserData(me, {clients:S.clients, visits:S.visits, cycles:S.cycles, synced:true, shareEnabled:S.shareEnabled});
   },
 
-  async batchUpdate(ssId,updates){
-    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values:batchUpdate`,{
-      method:'POST',
-      body:JSON.stringify({valueInputOption:'RAW',data:updates.map(u=>({range:u.range,values:u.values}))}),
-    });
+  // 서버에서 거래처+방문기록 불러오기
+  async load(onProgress) {
+    onProgress && onProgress('서버에서 불러오는 중...');
+    const result = await this.call('loadClients');
+    const {clients=[], visits=[], cycles={}, shareEnabled=false} = result;
+    const merged = Object.assign({}, DEF_CYCLES, cycles);
+    const now = new Date().toISOString();
+    S.synced = true; S.syncedAt = now; S.shareEnabled = shareEnabled;
+    S.clients = clients; S.visits = visits; S.cycles = merged;
+    saveUserData(S.user?.name || '', {clients, visits, cycles:merged, synced:true, shareEnabled});
+    render();
+    return {clientCount: clients.length, visitCount: visits.length};
   },
 
-  async readSheet(ssId,range){
-    const d=await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/${encodeURIComponent(range)}`);
-    return d.values||[];
+  // 공유된 다른 팀원 거래처 가져오기
+  async getShared(targetUser) {
+    const result = await this.call('getSharedOf', {target: targetUser});
+    return result.clients || [];
   },
 
-  // 본인 거래처를 본인 시트에 저장
-  async syncAll(onProgress){
-    const me=S.user?.name||'';
-    onProgress&&onProgress(`${me} 시트 준비 중...`);
-
-    // 공유받은 거래처 제외, 본인 거래처만
-    const myClients=S.clients.filter(c=>!c._shared&&(c.ownerName===me||!c.ownerName));
-    const myVisits =S.visits.filter(v=>myClients.some(c=>c.id===v.clientId));
-    const ssId=await this.getOrCreateSheet(me);
-
-    // 거래처 시트 행 (담당직원 컬럼은 빈값 유지 - 호환성)
-    const cRows=myClients.map(c=>[c.id,c.companyName,c.branchName,c.category,c.address,
-      c.contactName,c.contactPhone,c.ownerName||me,c.lastVisitDate||'',c.lat||'',c.lng||'',c.createdAt]);
-    const vRows=myVisits.map(v=>[v.id,v.clientId,v.type,v.date,v.memo||'',v.nextVisit||'',v.createdAt]);
-    // 방문주기 + 공유 허용 플래그
-    const cycRows=[
-      ['_SHARE_ENABLED', String(S.shareEnabled||false)],
-      ...Object.entries(S.cycles).map(([k,v])=>[k,v]),
-    ];
-
-    onProgress&&onProgress('기존 데이터 정리 중...');
-    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/거래처목록!A2:L:clear`,{method:'POST',body:'{}'});
-    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/방문기록!A2:G:clear`,   {method:'POST',body:'{}'});
-    await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${ssId}/values/방문주기!A2:B:clear`,   {method:'POST',body:'{}'});
-
-    onProgress&&onProgress(`${myClients.length}개 거래처 저장 중...`);
-    const updates=[];
-    if(cRows.length) updates.push({range:'거래처목록!A2',values:cRows});
-    if(vRows.length) updates.push({range:'방문기록!A2',  values:vRows});
-    if(cycRows.length)updates.push({range:'방문주기!A2', values:cycRows});
-    if(updates.length) await this.batchUpdate(ssId,updates);
-
-    set({user:{...S.user,spreadsheetId:ssId}},true);
-    saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
-  },
-
-  // 내 스프레드시트에서 불러오기
-  async loadMine(onProgress){
-    const name=S.user?.name||'공통';
-    onProgress&&onProgress('스프레드시트 찾는 중...');
-    const ssId=S.user?.spreadsheetId||await this.getOrCreateSheet(name);
-    S.user={...S.user,spreadsheetId:ssId};
-    saveSession(S.user);
-
-    onProgress&&onProgress('데이터 불러오는 중...');
-    const[cRows,vRows,cycRows]=await Promise.all([
-      this.readSheet(ssId,'거래처목록!A2:L').catch(()=>[]),
-      this.readSheet(ssId,'방문기록!A2:G').catch(()=>[]),
-      this.readSheet(ssId,'방문주기!A2:B').catch(()=>[]),
-    ]);
-    const clients=cRows.map(r=>({
-      id:r[0]||uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
-      address:r[4]||'',contactName:r[5]||'',contactPhone:r[6]||'',ownerName:r[7]||name,
-      lastVisitDate:r[8]||null,lat:r[9]?parseFloat(r[9]):null,lng:r[10]?parseFloat(r[10]):null,
-      createdAt:r[11]||new Date().toISOString(),
-    })).filter(c=>c.companyName);
-    const visits=vRows.map(r=>({
-      id:r[0]||uid(),clientId:r[1]||'',type:r[2]||'단순 방문',date:r[3]||'',
-      memo:r[4]||'',nextVisit:r[5]||'',createdAt:r[6]||new Date().toISOString(),
-    })).filter(v=>v.clientId);
-    const cycles={...DEF_CYCLES};
-    let shareFlag=null;
-    cycRows.forEach(r=>{
-      if(r[0]==='_SHARE_ENABLED'){shareFlag=r[1]==='true';return;}
-      if(r[0]&&r[1])cycles[r[0]]=parseInt(r[1])||45;
-    });
-    if(shareFlag!==null){set({shareEnabled:shareFlag},true);saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:shareFlag});}
-    set({clients,visits,cycles});
-    return {clientCount:clients.length, visitCount:visits.length};
-  },
-
-  // 관리자 전용: 전체 팀원 데이터를 하나의 마스터 시트에 담당자별 탭으로 통합
-  async createMasterSheet(onProgress){
-    onProgress&&onProgress('마스터 시트 생성 중...');
-    const masterName='VisitLog_전체통합_하나감정평가법인';
-    // 기존 마스터 시트 찾기
-    const q=encodeURIComponent(`name='${masterName}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`);
-    const list=await this.req(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`);
-    let masterId;
-
-    // 수집할 사용자 목록: 관리자 + 승인된 팀원
-    const users=['관리자', ...((CFG.approvedMembers||[]).map(m=>m.name))];
-
-    // 각 사용자의 데이터 수집
-    const allUserData={};
-    for(let i=0;i<users.length;i++){
-      const u=users[i];
-      onProgress&&onProgress(`${u} 데이터 수집 중... (${i+1}/${users.length})`);
-      try{
-        const ssId=await this.getOrCreateSheet(u);
-        const cRows=await this.readSheet(ssId,'거래처목록!A2:L').catch(()=>[]);
-        const vRows=await this.readSheet(ssId,'방문기록!A2:G').catch(()=>[]);
-        allUserData[u]={cRows,vRows};
-      }catch(e){
-        console.warn(`${u} 데이터 수집 실패:`,e);
-        allUserData[u]={cRows:[],vRows:[]};
-      }
-    }
-
-    // 마스터 시트가 없으면 생성, 있으면 모든 탭 삭제 후 재생성
-    if(list.files.length){
-      masterId=list.files[0].id;
-      // 기존 시트 정보 가져와서 모두 삭제
-      const meta=await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${masterId}?fields=sheets.properties`);
-      const existingSheets=meta.sheets.map(s=>s.properties.sheetId);
-      // 새 시트들 먼저 추가 후 기존 시트 삭제 (최소 1개 시트는 유지해야 함)
-      const requests=users.map((u,i)=>({addSheet:{properties:{title:u+'_거래처',index:i*2}}}))
-        .concat(users.map((u,i)=>({addSheet:{properties:{title:u+'_방문',index:i*2+1}}})));
-      await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${masterId}:batchUpdate`,{
-        method:'POST',body:JSON.stringify({requests}),
-      }).catch(()=>{}); // 이미 있으면 무시
-      // 기존 시트 삭제
-      const delReqs=existingSheets.map(sid=>({deleteSheet:{sheetId:sid}}));
-      if(delReqs.length){
-        await this.req(`https://sheets.googleapis.com/v4/spreadsheets/${masterId}:batchUpdate`,{
-          method:'POST',body:JSON.stringify({requests:delReqs}),
-        }).catch(()=>{});
-      }
-    }else{
-      onProgress&&onProgress('새 마스터 시트 생성 중...');
-      const sheets=[];
-      users.forEach((u,i)=>{
-        sheets.push({properties:{title:u+'_거래처',index:i*2}});
-        sheets.push({properties:{title:u+'_방문',index:i*2+1}});
-      });
-      const ss=await this.req('https://sheets.googleapis.com/v4/spreadsheets',{
-        method:'POST',
-        body:JSON.stringify({properties:{title:masterName,locale:'ko_KR'},sheets}),
-      });
-      masterId=ss.spreadsheetId;
-    }
-
-    // 각 탭에 헤더 + 데이터 입력
-    onProgress&&onProgress('데이터 작성 중...');
-    const updates=[];
-    for(const u of users){
-      const d=allUserData[u];
-      updates.push({range:`${u}_거래처!A1`, values:[CLIENT_HEADERS]});
-      if(d.cRows.length) updates.push({range:`${u}_거래처!A2`, values:d.cRows});
-      updates.push({range:`${u}_방문!A1`, values:[VISIT_HEADERS]});
-      if(d.vRows.length) updates.push({range:`${u}_방문!A2`, values:d.vRows});
-    }
-    if(updates.length) await this.batchUpdate(masterId,updates);
-
-    return {masterId, userCount:users.length, totalClients:Object.values(allUserData).reduce((s,d)=>s+d.cRows.length,0)};
-  },
+  async checkMember(name)    { return this.call('checkMember',  {name}); },
+  async requestMember(name)  { return this.call('requestMember',{name}); },
+  async getMembers()         { return this.call('getMembers'); },
+  async approveMember(name)  { return this.call('approveMember',{name}); },
+  async rejectMember(name)   { return this.call('rejectMember', {name}); },
+  async removeMember(name)   { return this.call('removeMember', {name}); },
+  async addMember(name)      { return this.call('addMember',    {name}); },
 };
 
-// ═══════════════════════════════════════════════
 // 5. GOOGLE MAPS
 // ═══════════════════════════════════════════════
 let _gmap=null,_gmarkers=[],_gpsWatcher=null;
@@ -1862,10 +1691,10 @@ async function doImportConfirm(){
 
   if(CFG.gasUrl){
     try{
-      importState.progress='Drive에 동기화 중...';render();
-      await GSheets.syncAll(p=>{importState.progress=p;render();});
+      importState.progress='서버에 동기화 중...';render();
+      await API.save(p=>{importState.progress=p;render();});
       importState={rows:null,parsed:null,preview:null,importing:false,progress:''};
-      toast(`✓ ${fresh.length}개 거래처 추가 및 Sheets 저장 완료`);
+      toast(`✓ ${fresh.length}개 거래처 추가 및 서버 저장 완료`);
     }catch(e){
       importState={rows:null,parsed:null,preview:null,importing:false,progress:''};
       toast(`✓ ${fresh.length}개 추가됨 (Sheets 오류: ${e.message})`);
@@ -1883,37 +1712,22 @@ async function doImportShared(){
   if(!CFG.gasUrl){toast('서버 URL이 설정되지 않았습니다');return;}
   toast(`${name}의 거래처 불러오는 중...`);
   try{
-    const ssId=await GSheets.getOrCreateSheet(name);
-    const cycRows=await GSheets.readSheet(ssId,'방문주기!A1:B20');
-    const shareRow=cycRows.find(r=>r[0]==='_SHARE_ENABLED');
-    const shareEnabled=shareRow?shareRow[1]==='true':false;
-    if(!shareEnabled){
-      alert(`⚠ ${name}님이 거래처 공유를 허용하지 않았습니다.\n\n해당 팀원에게 [설정 → 내 거래처 공유 설정]을 켠 후 Sheets 저장을 요청하세요.`);
+    const shared = await API.getShared(name);
+    if(!shared.length){
+      alert(`⚠ ${name}님이 거래처 공유를 허용하지 않았거나\n거래처 목록이 비어있습니다.\n\n해당 팀원에게 [설정 → 내 거래처 공유 설정]을 켜달라고 요청하세요.`);
       return;
     }
-    const rows=await GSheets.readSheet(ssId,'거래처목록!A2:L');
-    if(!rows.length){toast(`${name}의 거래처 목록이 비어있습니다`);return;}
-    const shared=rows.map(r=>({
-      id:uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
-      address:r[4]||'',contactName:r[5]||'',contactPhone:r[6]||'',
-      ownerName:name,
-      lastVisitDate:r[8]||null,lat:r[9]?parseFloat(r[9]):null,lng:r[10]?parseFloat(r[10]):null,
-      createdAt:new Date().toISOString(),
-      _shared:true, _sharedFrom:name,
-    })).filter(c=>c.companyName);
-
     const me=S.user?.name||'';
     const withDup=shared.map(c=>({
       ...c,
       _dup: S.clients.some(x=>!x._shared&&x.ownerName===me&&sim(x.companyName,c.companyName)>0.75)
     }));
-
     const existing=S.clients.filter(c=>!(c._sharedFrom===name));
     set({clients:[...existing,...withDup]});
     toast(`✓ ${name}의 거래처 ${withDup.length}개 공유됨`);
   }catch(e){
     if(/not found|404/i.test(e.message)){
-      alert(`⚠ ${name}님의 거래처 시트를 찾을 수 없습니다.\n해당 팀원이 아직 Drive에 데이터를 저장하지 않았을 수 있습니다.`);
+      alert(`⚠ ${name}님의 거래처 시트를 찾을 수 없습니다.`);
     }else{
       toast('오류: '+e.message);
     }
@@ -2023,25 +1837,11 @@ async function doViewTeamMember(memberName){
   if(!CFG.gasUrl){alert('서버 URL이 설정되지 않았습니다');return;}
   toast(`${memberName} 거래처 확인 중...`);
   try{
-    const ssId=await GSheets.getOrCreateSheet(memberName);
-    const cycRows=await GSheets.readSheet(ssId,'방문주기!A1:B20');
-    const shareRow=cycRows.find(r=>r[0]==='_SHARE_ENABLED');
-    const shareEnabled=shareRow?shareRow[1]==='true':false;
-    if(!shareEnabled){
-      alert(`⚠ ${memberName}님의 거래처 공유가 허용되어 있지 않습니다.\n\n해당 팀원에게 [설정 → 내 거래처 공유 설정]을 켠 후\nSheets에 저장하도록 요청하세요.`);
+    const shared = await API.getShared(memberName);
+    if(!shared.length){
+      alert(`⚠ ${memberName}님의 거래처 공유가 허용되어 있지 않거나\n거래처 목록이 비어있습니다.`);
       return;
     }
-    // 공유 허용된 경우: 공유 가져오기 후 목록으로 이동
-    const rows=await GSheets.readSheet(ssId,'거래처목록!A2:L');
-    if(!rows.length){toast(`${memberName}의 거래처 목록이 비어있습니다`);return;}
-    const shared=rows.map(r=>({
-      id:uid(),companyName:r[1]||'',branchName:r[2]||'',category:r[3]||'일반기업',
-      address:r[4]||'',contactName:r[5]||'',contactPhone:r[6]||'',
-      ownerName:memberName,
-      lastVisitDate:r[8]||null,lat:r[9]?parseFloat(r[9]):null,lng:r[10]?parseFloat(r[10]):null,
-      createdAt:new Date().toISOString(),
-      _shared:true, _sharedFrom:memberName,
-    })).filter(c=>c.companyName);
     const withDup=shared.map(c=>({
       ...c,
       _dup: S.clients.some(x=>!x._shared&&x.ownerName===me&&sim(x.companyName,c.companyName)>0.75)
@@ -2450,15 +2250,16 @@ async function doCreateMaster(){
   if(!CFG.gasUrl){alert('GAS 서버 URL이 설정되지 않았습니다');return;}
   if(!confirm('전체 팀원 데이터를 통합 시트로 만들거나 갱신합니다.\n계속하시겠습니까?'))return;
   syncProgress='준비 중...';render();
+  syncProgress='서버 시트 조회 중...';render();
   try{
-    const r=await GSheets.createMasterSheet(p=>{syncProgress=p;render();});
+    const r = await API.call('getSheetInfo');
     syncProgress='';render();
-    if(confirm(`✓ 마스터 시트 생성/갱신 완료\n\n팀원 ${r.userCount}명 · 총 거래처 ${r.totalClients}개\n\n바로 열어보시겠습니까?`)){
-      window.open(`https://docs.google.com/spreadsheets/d/${r.masterId}`,'_blank');
+    if(confirm(`서버 스프레드시트\n\n${r.ssUrl}\n\n바로 열어보시겠습니까?`)){
+      window.open(r.ssUrl,'_blank');
     }
   }catch(e){
     syncProgress='';render();
-    alert('마스터 시트 생성 실패:\n'+e.message);
+    alert('오류: '+e.message);
   }
 }
 
@@ -2759,7 +2560,7 @@ async function retryOfflineQueue(){
     if(!q.length) return;
     localStorage.removeItem(OFFLINE_QUEUE_KEY);
     toast('📡 온라인 복귀 — 저장 중...');
-    await GSheets.syncAll();
+    await API.save();
     toast('✓ 오프라인 데이터 동기화 완료');
   }catch(e){ console.warn('오프라인 큐 재시도 실패:', e); }
 }
