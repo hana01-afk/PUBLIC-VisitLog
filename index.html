@@ -225,13 +225,11 @@ function saveCfg(c){ try{ localStorage.setItem(CFG_KEY,JSON.stringify(c)); }catc
 
 const _cfg = loadCfg() || {};
 let CFG = {
-  driveClientId: _cfg.driveClientId || '',
+  gasUrl:      _cfg.gasUrl      || '',  // GAS Web App URL (백엔드)
   mapsKey:       _cfg.mapsKey       || '',
   geminiKey:     _cfg.geminiKey     || '',  // Gemini API 키 (관리자 설정)
   adminPwHash:   _cfg.adminPwHash   || '',
   // 팀원 관리 (관리자가 추가/승인)
-  approvedMembers:  _cfg.approvedMembers  || [],
-  pendingMembers:   _cfg.pendingMembers   || [],
 };
 
 // ── 사용자 세션 상태 (사용자별 분리 저장) ───────────────────
@@ -244,23 +242,25 @@ const SESSION_KEY = 'vl_hana_session';
 function loadSession(){ try{ return JSON.parse(localStorage.getItem(SESSION_KEY)); }catch{ return null; } }
 function saveSession(u){ try{ localStorage.setItem(SESSION_KEY,JSON.stringify(u)); }catch{} }
 
-const _sess = loadSession();
-const _userData = _sess?.name ? (loadUserData(_sess.name) || {}) : {};
+// ── 앱 재실행 시 항상 로그인 화면 표시 (세션 자동 복원 비활성화)
+// 사용자 데이터(거래처 등)는 로그인 후 이름 기반으로 불러옴
+loadSession(); // (구 세션 정보는 읽지 않고 바로 초기화)
+saveSession(null);
 
 let S = {
-  user:    _sess || null,   // {name, role:'admin'|'member', spreadsheetId}
-  clients: _userData.clients || [],
-  visits:  _userData.visits  || [],
-  cycles:  _userData.cycles  || {...DEF_CYCLES},
-  drive:   _userData.drive   || {connected:false,accessToken:null,expiresAt:null},
-  shareEnabled: _userData.shareEnabled ?? false,  // 사용자별 공유 허용 여부
+  user:    null,   // 항상 로그인 화면으로 시작
+  clients: [],
+  visits:  [],
+  cycles:  {...DEF_CYCLES},
+  drive:   {connected:false,accessToken:null,expiresAt:null},
+  shareEnabled: false,
 };
 
 function set(patch,skipSave=false){
   S={...S,...patch};
   if(!skipSave){
     if(S.user?.name){
-      saveUserData(S.user.name,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
+      saveUserData(S.user.name,{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
     }
     saveSession(S.user);
   }
@@ -621,7 +621,7 @@ const GSheets={
     if(updates.length) await this.batchUpdate(ssId,updates);
 
     set({user:{...S.user,spreadsheetId:ssId}},true);
-    saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
+    saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
   },
 
   // 내 스프레드시트에서 불러오기
@@ -654,7 +654,7 @@ const GSheets={
       if(r[0]==='_SHARE_ENABLED'){shareFlag=r[1]==='true';return;}
       if(r[0]&&r[1])cycles[r[0]]=parseInt(r[1])||45;
     });
-    if(shareFlag!==null){set({shareEnabled:shareFlag},true);saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:shareFlag});}
+    if(shareFlag!==null){set({shareEnabled:shareFlag},true);saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:shareFlag});}
     set({clients,visits,cycles});
     return {clientCount:clients.length, visitCount:visits.length};
   },
@@ -1056,10 +1056,16 @@ let loginScreen = 'select';
 let lf = { name:'', pw:'', newPw:'', newPw2:'' };
 
 function PageLogin(){
-  const hasCfg = !!(CFG.driveClientId);      // 관리자 설정 완료 여부
+  const hasCfg = !!(CFG.gasUrl);      // GAS URL 설정 완료 여부
   const hasPw  = !!(CFG.adminPwHash);         // 관리자 비밀번호 설정 여부
 
   // ── 화면 선택 ──────────────────────────────────────────
+  if(loginScreen==='checking') return `
+    <div class="card" style="text-align:center;padding:40px 20px">
+      <div class="spin" style="width:32px;height:32px;margin:0 auto 16px"></div>
+      <div style="font-size:14px;color:var(--tx2)">서버 확인 중...</div>
+    </div>`;
+
   if(loginScreen==='select') return `
     <div class="lsc">
       <div class="llo">🏢</div>
@@ -1183,7 +1189,7 @@ function doMemberLogin(){
   if(!name){toast('담당자 이름을 입력하세요');return;}
 
   // 관리자 설정 완료 후에는 승인 체크
-  if(CFG.driveClientId){
+  if(CFG.gasUrl){
     const isApproved = (CFG.approvedMembers||[]).some(m=>m.name===name);
     const isPending  = (CFG.pendingMembers||[]).some(m=>m.name===name);
     if(!isApproved){
@@ -1206,7 +1212,7 @@ function doMemberLogin(){
     shareEnabled: userData.shareEnabled ?? false,  // ← Bug fix: shareEnabled 초기화 누락
   };
   saveSession(S.user);
-  saveUserData(name,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
+  saveUserData(name,{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
   if(CFG.mapsKey)loadMapsScript();
   go('list');
 }
@@ -1240,7 +1246,7 @@ async function doAdminLogin(){
     shareEnabled: userData.shareEnabled ?? false,  // ← Bug fix: shareEnabled 초기화 누락
   };
   saveSession(S.user);
-  saveUserData(adminName,{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
+  saveUserData(adminName,{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
   if(CFG.mapsKey)loadMapsScript();
   render();
   go('team');  // 관리자는 팀원 현황 화면으로
@@ -1534,7 +1540,7 @@ async function saveVisit(cid){
   const clients=S.clients.map(c=>c.id===cid?{...c,lastVisitDate:latest}:c);
   set({clients,visits:[...S.visits,v]});
   vf={type:'단순 방문',memo:'',date:''};
-  if(S.drive.connected){try{await GSheets.syncAll();toast('✓ 저장 + Sheets 동기화');}catch{toast('✓ 로컬 저장됨 (Sheets 오류)');}}
+  if(CFG.gasUrl){try{await API.save();toast('✓ 저장 + 서버 동기화');}catch{toast('✓ 로컬 저장됨 (서버 오류)');}}
   else toast('✓ 방문 기록 저장됨');
   go('detail',cid);
 }
@@ -1741,7 +1747,7 @@ function PageImport(){
         팀원 거래처 불러오기
       </button>
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.6">
-        Drive 연결 상태에서만 사용 가능 · 불러온 거래처는 "공유" 태그로 표시
+        서버 동기화 후 다른 팀원의 공유 거래처를 가져올 수 있습니다
       </div>
     </div>
 
@@ -1810,7 +1816,7 @@ async function doImportConfirm(){
 
   importState={...importState,importing:true,progress:'데이터 저장 중...'};render();
   set({clients:[...S.clients,...fresh]},true);
-  saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
+  saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
 
   // Google Maps Places가 로드되어 있으면 자동 주소 검색 (백그라운드)
   if(CFG.mapsKey&&window.google?.maps?.places){
@@ -1851,10 +1857,10 @@ async function doImportConfirm(){
       render();
       await new Promise(r=>setTimeout(r,120)); // rate limit
     }
-    saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});
+    saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
   }
 
-  if(S.drive.connected){
+  if(CFG.gasUrl){
     try{
       importState.progress='Drive에 동기화 중...';render();
       await GSheets.syncAll(p=>{importState.progress=p;render();});
@@ -1874,7 +1880,7 @@ async function doImportConfirm(){
 async function doImportShared(){
   const name=document.getElementById('share_name')?.value?.trim();
   if(!name){toast('팀원 이름을 입력하세요');return;}
-  if(!S.drive.connected){toast('먼저 Drive를 연결해주세요');return;}
+  if(!CFG.gasUrl){toast('서버 URL이 설정되지 않았습니다');return;}
   toast(`${name}의 거래처 불러오는 중...`);
   try{
     const ssId=await GSheets.getOrCreateSheet(name);
@@ -2014,10 +2020,7 @@ async function doViewTeamMember(memberName){
     fOwner='내 거래처'; srchQ=''; fCat='전체'; fU='전체';
     go('list'); return;
   }
-  if(!S.drive.connected){
-    alert('Drive 연결 후 다른 팀원의 거래처를 조회할 수 있습니다.');
-    return;
-  }
+  if(!CFG.gasUrl){alert('서버 URL이 설정되지 않았습니다');return;}
   toast(`${memberName} 거래처 확인 중...`);
   try{
     const ssId=await GSheets.getOrCreateSheet(memberName);
@@ -2155,13 +2158,11 @@ function saveManual(){
 function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null};render();}
 
 /* ── SETTINGS ── */
-let driveBusy=false,syncProgress='';
+let syncProgress='';
 function PageSettings(){
-  const{drive}=S;
   const isAdmin=S.user?.role==='admin';
-  const hasCfg=!!(CFG.driveClientId);
-  const dsc=drive.connected?'ok':driveBusy?'busy':'err';
-  const dst=drive.connected?'✓ Drive / Sheets 연결됨':driveBusy?'연결 중...':'연결 안됨';
+  const hasGas=!!(CFG.gasUrl);
+  const syncSt=S.synced?`✓ 마지막 동기화: ${S.syncedAt?new Date(S.syncedAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}):'완료'}`:'동기화 안됨';
   return`
   <div class="hdr">
     <div class="hdr-row">
@@ -2177,36 +2178,34 @@ function PageSettings(){
       <div class="fr"><span class="fl">이름</span><span class="fv">${S.user?.name}</span></div>
       <div class="fr"><span class="fl">권한</span>
         <span class="fv" style="color:${isAdmin?'var(--yw)':'var(--ac)'}">${isAdmin?'⚙ 관리자':'👤 팀원'}</span></div>
-      ${isAdmin&&S.user?.spreadsheetId?`<div class="fr"><span class="fl">Sheets</span><span class="fv" style="font-size:11px">
-        <a href="https://docs.google.com/spreadsheets/d/${S.user.spreadsheetId}" target="_blank" style="color:var(--ac)">관리자 시트 열기 ↗</a></span></div>`:''}
+
       <button class="btn bd2 bsm mt2" style="width:auto" onclick="doLogout()">로그아웃</button>
     </div>
 
     ${isAdmin?`
-    <div style="padding:8px 14px 4px">
+        <div style="padding:8px 14px 4px">
       <div style="font-size:11px;font-weight:700;color:var(--yw);letter-spacing:.06em;text-transform:uppercase">⚙ 관리자 전용 설정</div>
-      <div style="font-size:10.5px;color:var(--tx3);margin-top:3px">아래 설정은 같은 기기의 팀원 로그인에도 자동 적용됩니다</div>
+      <div style="font-size:10.5px;color:var(--tx3);margin-top:3px">GAS URL 설정 후 팀원 모두가 동일 서버를 사용합니다</div>
     </div>
 
-    <div class="slbl">Google OAuth Client ID</div>
+    <div class="slbl">GAS 서버 URL</div>
     <div class="card">
-      <div class="ig"><label class="il">Client ID (Drive · Sheets 연동 필수)</label>
-        <input type="text" id="s_cid" value="${CFG.driveClientId}" placeholder="xxx.apps.googleusercontent.com"></div>
-      <div class="ds ${dsc}" style="margin-bottom:10px">
+      <div class="ig"><label class="il">Google Apps Script 배포 URL</label>
+        <input type="text" id="s_gas_url" value="${CFG.gasUrl}" placeholder="https://script.google.com/macros/s/.../exec"></div>
+      <div class="ds ${hasGas?'ok':'err'}" style="margin-bottom:10px">
         <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          ${drive.connected?'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>':'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>'}
-        </svg><span>${dst}</span>
-        ${drive.connected?`<span style="font-size:10px;color:var(--tx3);margin-left:auto">만료: ${new Date(drive.expiresAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</span>`:''}
+          ${hasGas?'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>':'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>'}
+        </svg><span>${hasGas?syncSt:'미설정 — GAS URL을 입력하세요'}</span>
       </div>
       ${syncProgress?`<div style="font-size:11px;color:var(--ac);padding:5px 0;text-align:center;font-family:var(--mo)">${syncProgress}</div>`:''}
       <div class="row g2" style="flex-wrap:wrap">
-        <button class="btn bp bsm f1" onclick="doConnect()">${driveBusy?'<div class="spin"></div>':'Drive 연결'}</button>
-        ${drive.connected?`<button class="btn bg bsm" onclick="doSync()">Sheets 저장</button>
-        <button class="btn bs bsm" onclick="doLoad()">Sheets 불러오기</button>`:''}
+        <button class="btn bp bsm" onclick="doSaveGasUrl()">URL 저장 및 연결 확인</button>
+        ${hasGas?`<button class="btn bg bsm" onclick="doSync()">서버 저장</button>
+        <button class="btn bs bsm" onclick="doLoad()">서버 불러오기</button>`:''}
       </div>
       <div style="font-size:10px;color:var(--tx3);margin-top:9px;line-height:1.8">
-        <a href="https://console.cloud.google.com" target="_blank" style="color:var(--ac)">Google Cloud Console</a> → Sheets API · Drive API 활성화<br>
-        파일명: <b>VisitLog_[담당자명]_하나감정평가법인</b> (탭: 거래처목록·방문기록·방문주기)
+        하나감정평가법인 구글 계정에서 <b>Apps Script</b> 배포 후 URL 입력.<br>
+        모든 팀원의 데이터가 <b>하나감정 Drive</b>에 통합 저장됩니다.
       </div>
     </div>
 
@@ -2237,27 +2236,20 @@ function PageSettings(){
       </div>
     </div>
 
-    <div class="slbl">📲 모바일 기기에 설정 공유</div>
+    <div class="slbl">📲 GAS URL 공유</div>
     <div class="card">
       <div style="font-size:11.5px;color:var(--tx2);margin-bottom:10px;line-height:1.7">
-        OAuth ID와 Maps API 키를 모바일에서 입력하지 않으려면<br>
-        아래 링크를 모바일 Chrome에서 한 번 열면 자동 적용됩니다.
+        GAS URL을 팀원들이 각자 설정해야 합니다.<br>
+        아래 URL을 복사해서 팀원들에게 공유하세요.
       </div>
-      ${(CFG.driveClientId||CFG.mapsKey)?`
+      ${CFG.gasUrl?`
       <div class="ig">
-        <label class="il">설정 적용 링크</label>
-        <input type="text" id="cfgLink" readonly value="${makeConfigLink()}" onclick="this.select()" style="font-size:10px;font-family:var(--mo);cursor:text">
+        <label class="il">GAS URL (복사하여 공유)</label>
+        <input type="text" readonly value="${CFG.gasUrl}" onclick="this.select()" style="font-size:9.5px;font-family:var(--mo);cursor:text">
       </div>
-      <div class="row g2" style="flex-wrap:wrap">
-        <button class="btn bs bsm" onclick="copyConfigLink()">📋 링크 복사</button>
-        <button class="btn bs bsm" onclick="showQRCode()">📱 QR 보기</button>
-      </div>
-      <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.6">
-        ⚠ 이 링크는 OAuth/Maps 키를 포함합니다. 외부 공유 금지<br>
-        팀원에게는 별도로 비밀번호 없이 본인 이름으로 로그인하게 안내하세요
-      </div>`:`
+      <button class="btn bs bsm" style="margin-top:8px" onclick="navigator.clipboard.writeText(CFG.gasUrl).then(()=>toast('복사됨'))">📋 URL 복사</button>`:`
       <div style="font-size:11.5px;color:var(--or);text-align:center;padding:8px">
-        ⚠ 먼저 OAuth ID 또는 Maps API 키를 입력하세요
+        ⚠ 먼저 GAS URL을 입력하세요
       </div>`}
     </div>
 
@@ -2285,25 +2277,25 @@ function PageSettings(){
         </div>
       </div>
       <div style="font-size:10.5px;color:var(--tx3);line-height:1.7;border-top:1px solid var(--bd);padding-top:8px;margin-top:6px">
-        공유를 켠 후 <b>Sheets 저장</b>을 누르면 적용됩니다.
+        공유를 켠 후 <b>서버 저장</b>을 누르면 적용됩니다.
       </div>
     </div>
 
-    <div class="slbl">전체 통합 시트 (관리자 전용)</div>
+    <div class="slbl">서버 스프레드시트 (관리자 전용)</div>
     <div class="card">
       <div style="font-size:11.5px;color:var(--tx2);margin-bottom:9px;line-height:1.7">
-        모든 팀원의 거래처·방문 기록을 한 스프레드시트에 <b>담당자별 탭</b>으로 모읍니다.<br>
-        파일명: <b>VisitLog_전체통합_하나감정평가법인</b>
+        GAS 서버가 사용하는 스프레드시트를 바로 열어볼 수 있습니다.<br>
+        모든 팀원의 거래처가 <b>담당자별 시트</b>로 자동 저장됩니다.
       </div>
-      ${syncProgress?`<div style="font-size:11px;color:var(--ac);padding:5px 0;text-align:center;font-family:var(--mo)">${syncProgress}</div>`:''}
-      <button class="btn bs bsm" style="width:auto" onclick="doCreateMaster()">마스터 시트 생성/갱신</button>
+      <button class="btn bs bsm" style="width:auto" onclick="doCreateMaster()">📊 서버 시트 열기</button>
     </div>
 
     <div class="slbl">팀원 관리 (승인)</div>
     <div class="card">
+      <button class="btn bs bsm" style="width:auto;margin-bottom:10px" onclick="_refreshMembers()">🔄 목록 새로고침</button>
       ${(()=>{
-        const pending=CFG.pendingMembers||[];
-        const approved=CFG.approvedMembers||[];
+        const pending=_cachedMembers.pending||[];
+        const approved=_cachedMembers.approved||[];
         let html='';
         if(pending.length){
           html+='<div style="font-size:11.5px;color:var(--or);font-weight:600;margin-bottom:8px">승인 대기 ('+pending.length+'명)</div>';
@@ -2354,19 +2346,18 @@ function PageSettings(){
       <div style="font-size:10.5px;color:var(--tx3)">거래처 ${S.clients.length}개 · 방문 ${S.visits.length}건</div>
     </div>
     `:`
-    <div class="slbl">Drive 연결</div>
+    <div class="slbl">데이터 동기화</div>
     <div class="card">
-      <div class="ds ${dsc}" style="margin-bottom:10px">
+      <div class="ds ${hasGas?'ok':'err'}" style="margin-bottom:10px">
         <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          ${drive.connected?'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>':'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>'}
-        </svg><span>${dst}</span>
+          ${hasGas?'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>':'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>'}
+        </svg><span>${hasGas?syncSt:'관리자 서버 설정 대기 중'}</span>
       </div>
-      ${!hasCfg?`<div style="font-size:11.5px;color:var(--or);line-height:1.6">관리자 설정이 완료되지 않았습니다.<br>관리자에게 설정을 요청하세요.</div>`:`
+      ${!hasGas?`<div style="font-size:11.5px;color:var(--or);line-height:1.6">관리자 설정이 완료되지 않았습니다.<br>관리자에게 GAS URL 설정을 요청하세요.</div>`:`
       ${syncProgress?`<div style="font-size:11px;color:var(--ac);padding:5px 0;text-align:center;font-family:var(--mo)">${syncProgress}</div>`:''}
       <div class="row g2">
-        <button class="btn bp bsm f1" onclick="doConnect()">${driveBusy?'<div class="spin"></div>':'내 Drive 연결'}</button>
-        ${drive.connected?`<button class="btn bg bsm" onclick="doSync()">저장</button>
-        <button class="btn bs bsm" onclick="doLoad()">불러오기</button>`:''}
+        <button class="btn bg bsm f1" onclick="doSync()">서버 저장</button>
+        <button class="btn bs bsm f1" onclick="doLoad()">서버 불러오기</button>
       </div>`}
     </div>
 
@@ -2386,7 +2377,7 @@ function PageSettings(){
         </div>
       </div>
       <div style="font-size:10.5px;color:var(--tx3);line-height:1.7;border-top:1px solid var(--bd);padding-top:8px;margin-top:6px">
-        공유를 켠 후 <b>Sheets 저장</b>을 누르면 적용됩니다.
+        공유를 켠 후 <b>서버 저장</b>을 누르면 적용됩니다.
       </div>
     </div>
     `}
@@ -2410,41 +2401,43 @@ function PageSettings(){
 function doLogout(){
   if(!confirm('로그아웃 하시겠습니까?'))return;
   saveSession(null);
-  S = {user:null, clients:[], visits:[], cycles:{...DEF_CYCLES}, drive:{connected:false}};
+  S = {user:null, clients:[], visits:[], cycles:{...DEF_CYCLES}, synced:false, syncedAt:null};
   loginScreen='select';lf={name:'',pw:'',newPw:'',newPw2:''};
   render();
 }
 
-function doApproveMember(name){
-  const pending=(CFG.pendingMembers||[]).filter(m=>m.name!==name);
-  const approved=(CFG.approvedMembers||[]).filter(m=>m.name!==name);
-  approved.push({name,addedAt:new Date().toISOString()});
-  CFG={...CFG,pendingMembers:pending,approvedMembers:approved};
-  saveCfg(CFG);
-  toast(`✓ ${name} 승인됨`);render();
+async function doApproveMember(name){
+  try{await API.approveMember(name);toast(`✓ ${name} 승인됨`);await _refreshMembers();}
+  catch(e){toast('오류: '+e.message);}
 }
 
-function doRejectMember(name){
-  if(!confirm(`${name}의 승인 요청을 거절하시겠습니까?`))return;
-  const pending=(CFG.pendingMembers||[]).filter(m=>m.name!==name);
-  CFG={...CFG,pendingMembers:pending};saveCfg(CFG);
-  toast(`${name} 거절됨`);render();
+async function doRejectMember(name){
+  if(!confirm(`${name}의 요청을 거절하시겠습니까?`))return;
+  try{await API.rejectMember(name);toast(`${name} 거절됨`);await _refreshMembers();}
+  catch(e){toast('오류: '+e.message);}
 }
 
-function doRemoveMember(name){
-  if(!confirm(`${name}을(를) 팀원 목록에서 제거하시겠습니까?`))return;
-  const approved=(CFG.approvedMembers||[]).filter(m=>m.name!==name);
-  CFG={...CFG,approvedMembers:approved};saveCfg(CFG);
-  toast(`${name} 제거됨`);render();
+async function doRemoveMember(name){
+  if(!confirm(`${name}님을 팀원에서 제거하시겠습니까?`))return;
+  try{await API.removeMember(name);toast(`${name} 제거됨`);await _refreshMembers();}
+  catch(e){toast('오류: '+e.message);}
 }
 
-function doAddMember(){
+async function doAddMember(){
   const name=document.getElementById('add_member')?.value?.trim();
   if(!name){toast('이름을 입력하세요');return;}
-  const approved=(CFG.approvedMembers||[]).filter(m=>m.name!==name);
-  approved.push({name,addedAt:new Date().toISOString()});
-  CFG={...CFG,approvedMembers:approved};saveCfg(CFG);
-  toast(`✓ ${name} 추가됨`);render();
+  try{
+    await API.addMember(name);
+    toast(`✓ ${name} 추가됨`);
+    const el=document.getElementById('add_member'); if(el)el.value='';
+    await _refreshMembers();
+  }catch(e){toast('오류: '+e.message);}
+}
+
+let _cachedMembers={approved:[],pending:[]};
+async function _refreshMembers(){
+  try{_cachedMembers=await API.getMembers();}catch(e){}
+  render();
 }
 
 function doClearClients(){
@@ -2454,7 +2447,7 @@ function doClearClients(){
 }
 
 async function doCreateMaster(){
-  if(!S.drive.connected){alert('먼저 Drive를 연결해주세요');return;}
+  if(!CFG.gasUrl){alert('GAS 서버 URL이 설정되지 않았습니다');return;}
   if(!confirm('전체 팀원 데이터를 통합 시트로 만들거나 갱신합니다.\n계속하시겠습니까?'))return;
   syncProgress='준비 중...';render();
   try{
@@ -2497,45 +2490,57 @@ async function doChangePw(){
   toast('✓ 비밀번호가 변경됐습니다');
 }
 
+// GIS 라이브러리 로딩 대기 (최대 10초)
+function waitForGIS(timeoutMs=10000){
+  return new Promise((ok,fail)=>{
+    if(window.google?.accounts?.oauth2){ok();return;}
+    const start=Date.now();
+    const check=setInterval(()=>{
+      if(window.google?.accounts?.oauth2){clearInterval(check);ok();}
+      else if(Date.now()-start>timeoutMs){clearInterval(check);fail(new Error("Google 인증 라이브러리 로드 실패\n페이지를 새로고침 후 다시 시도하세요"));}
+    },200);
+  });
+}
+
 async function doConnect(){
-  const cid=(document.getElementById('s_cid')?.value||CFG.driveClientId||'').trim();
-  if(!cid){toast('Client ID를 입력하세요');return;}
-  CFG={...CFG,driveClientId:cid};saveCfg(CFG);
-  driveBusy=true;render();
-  try{await GSheets.connect(cid);driveBusy=false;toast('✓ Drive 연결됨');render();}
-  catch(e){driveBusy=false;toast('연결 실패: '+e.message);render();}
+
+  try{
+  }
+  catch(e){
+    const msg=e.message||String(e);
+    if(msg.includes("popup")||msg.includes("blocked"))toast("팝업이 차단됐습니다. 주소창의 팝업 허용 후 재시도");
+    else toast("연결 실패: "+msg);
+    render();
+  }
 }
 
 async function doSync(){
-  if(!isOnline()){
-    enqueueOfflineSync('sync');
-    toast('📡 오프라인 — 온라인 복귀 시 자동 저장됩니다');
-    return;
-  }
-  syncProgress='준비 중...';render();
+  if(!isOnline()){enqueueOfflineSync('sync');toast('📡 오프라인 — 온라인 복귀 시 저장됩니다');return;}
+  if(!CFG.gasUrl){toast('서버 URL이 설정되지 않았습니다');return;}
+  syncProgress='저장 중...';render();
   try{
-    await GSheets.syncAll(p=>{syncProgress=p;render();});
-    syncProgress='';toast('✓ Sheets 저장 완료');render();
+    await API.save(p=>{syncProgress=p;render();});
+    syncProgress='';toast('✓ 서버에 저장 완료');render();
   }catch(e){
     syncProgress='';render();
-    // 네트워크 오류면 큐에 등록
-    if(/network|fetch|failed/i.test(e.message)){ enqueueOfflineSync('sync'); toast('⚠ 저장 실패 — 온라인 복귀 시 재시도 예정'); }
-    else toast('오류: '+e.message);
+    if(/network|fetch|failed/i.test(e.message)){enqueueOfflineSync('sync');toast('⚠ 저장 실패 — 온라인 복귀 시 재시도');}
+    else toast('저장 실패: '+e.message);
   }
 }
-async function doLoad(){
-  syncProgress='준비 중...';render();
+async function doLoad(silent=false){
+  if(!CFG.gasUrl){if(!silent)toast('서버 URL이 설정되지 않았습니다');return;}
+  syncProgress='불러오는 중...';render();
   try{
-    const r=await GSheets.loadMine(p=>{syncProgress=p;render();});
+    const r=await API.load(p=>{syncProgress=p;render();});
     syncProgress='';render();
     if(r.clientCount===0){
-      alert(`✓ 시트는 정상 연결됐지만 저장된 거래처가 없습니다.\n\n먼저 [Sheets 저장] 버튼으로 데이터를 업로드한 후\n다른 기기에서 [Sheets 불러오기]를 해주세요.`);
+      if(!silent)alert('서버에 저장된 거래처가 없습니다.\n먼저 [서버 저장] 버튼으로 데이터를 올려주세요.');
     }else{
       toast(`✓ 거래처 ${r.clientCount}개, 방문 ${r.visitCount}건 불러옴`);
     }
   }catch(e){
     syncProgress='';render();
-    alert('Sheets 불러오기 실패:\n'+e.message);
+    if(!silent)toast('불러오기 실패: '+e.message);
   }
 }
 
@@ -2553,7 +2558,7 @@ function importRows(rows){
   const fresh=parsed.filter(p=>!S.clients.some(c=>sim(c.companyName,p.companyName)>0.85));
   set({clients:[...S.clients,...fresh]});
   toast(`✓ ${fresh.length}개 추가 (중복 ${parsed.length-fresh.length}개 제외)`);
-  if(S.drive.connected)setTimeout(()=>doSync(),800);
+  if(CFG.gasUrl)setTimeout(()=>doSync(),800);
 }
 async function doAIParse(){
   const txt=document.getElementById('s_ait')?.value?.trim();if(!txt){toast('텍스트를 입력하세요');return;}
@@ -2575,7 +2580,6 @@ function toggleShare(){
 
 function makeConfigLink(){
   const data={};
-  if(CFG.driveClientId) data.cid=CFG.driveClientId;
   if(CFG.mapsKey) data.mk=CFG.mapsKey;
   if(CFG.geminiKey) data.gk=CFG.geminiKey;
   const b64=encodeURIComponent(btoa(JSON.stringify(data)));
@@ -2652,7 +2656,7 @@ async function doBatchGeo(){
     }catch{}
     await new Promise(r=>setTimeout(r,500));
   }
-  saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,drive:S.drive,shareEnabled:S.shareEnabled});render();
+  saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});render();
   toast(`✓ ${done}/${targets.length}개 좌표 등록됨`);
   if(page==='map'&&_gmap)placeMapMarkers();
 }
@@ -2750,7 +2754,7 @@ function enqueueOfflineSync(type='sync'){
 
 // 온라인 복귀 시 큐 소비
 async function retryOfflineQueue(){
-  if(!S.user||!S.drive?.connected) return;
+  if(!S.user||!CFG.gasUrl) return;
   try{
     const q=JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY)||'[]');
     if(!q.length) return;
@@ -2772,9 +2776,6 @@ window.addEventListener('offline', ()=>{ updateOfflineBanner(); });
     if(!cfgB64)return;
     const decoded=JSON.parse(atob(decodeURIComponent(cfgB64)));
     let changed=[];
-    if(decoded.cid && decoded.cid!==CFG.driveClientId){
-      CFG={...CFG,driveClientId:decoded.cid};changed.push('OAuth Client ID');
-    }
     if(decoded.mk && decoded.mk!==CFG.mapsKey){
       CFG={...CFG,mapsKey:decoded.mk};changed.push('Maps API 키');
     }
@@ -2818,7 +2819,7 @@ window.addEventListener('offline', ()=>{ updateOfflineBanner(); });
       clients: migratedClients,
       visits: legacy.visits || [],
       cycles: legacy.cycles || {...DEF_CYCLES},
-      drive: legacy.drive || {connected:false},
+
     });
 
     // 세션 정보도 새 키로
@@ -2830,7 +2831,7 @@ window.addEventListener('offline', ()=>{ updateOfflineBanner(); });
       clients: migratedClients,
       visits: legacy.visits || [],
       cycles: legacy.cycles || {...DEF_CYCLES},
-      drive: legacy.drive || {connected:false},
+
     };
 
     // 레거시 키 삭제
