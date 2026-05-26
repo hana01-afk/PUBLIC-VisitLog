@@ -552,6 +552,9 @@ const Gem={
       extractedText = null;
     }
 
+    // Tesseract가 텍스트를 뽑았으면 sc에 저장 (Gemini 실패해도 화면에 표시용)
+    if(extractedText) sc._ocrText = extractedText;
+
     // 2단계: Gemini로 구조화
     const gemKey = CFG.geminiKey;
     if(!gemKey) throw new Error('Gemini API 키가 설정되지 않았습니다.\n[설정 → Gemini API 키]에서 입력해주세요.');
@@ -572,19 +575,44 @@ const Gem={
       ];
     }
 
-    const gemRes = await fetch(
+    // Gemini 호출 (429 시 retry-after 파싱 후 자동 1회 재시도)
+    const _callGemini = ()=>fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${gemKey}`,
       {method:'POST', headers:{'Content-Type':'application/json'},
-       body: JSON.stringify({contents:[{parts:gemParts}], generationConfig:{temperature:0.1,maxOutputTokens:600}})}
+       body:JSON.stringify({contents:[{parts:gemParts}],generationConfig:{temperature:0.1,maxOutputTokens:600}})}
     );
+
+    let gemRes = await _callGemini();
+
+    if(gemRes.status===429){
+      const e429 = await gemRes.json().catch(()=>({}));
+      const msg429 = e429?.error?.message||'';
+      const retryMatch = msg429.match(/retry(?:\s+after)?\s*([\d.]+)\s*s/i);
+      const waitSec = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : 30;
+
+      // 카운트다운 표시 후 자동 재시도
+      for(let t=waitSec; t>0; t--){
+        onProgress&&onProgress(`요청 한도 초과 — ${t}초 후 자동 재시도...`);
+        sc={...sc,progress:`요청 한도 초과 — ${t}초 후 자동 재시도...`};render();
+        await new Promise(r=>setTimeout(r,1000));
+      }
+      onProgress&&onProgress('Gemini 재시도 중...');
+      gemRes = await _callGemini();
+    }
+
     if(!gemRes.ok){
       const e = await gemRes.json().catch(()=>({}));
       const msg = e?.error?.message||'';
       if(gemRes.status===429||msg.includes('quota')||msg.includes('RESOURCE_EXHAUSTED')){
-        throw new Error('AI 요청 한도 초과.\n잠시 후 다시 시도해주세요.');
+        // Tesseract 텍스트라도 있으면 특수 에러로 구분
+        const ocrHint = extractedText
+          ? '【OCR 텍스트 인식 성공 — 아래 내용 참고해 직접 입력하세요】'
+          : '';
+        throw new Error('RATE_LIMIT'+ocrHint);
       }
-      throw new Error('AI 인식 실패. 직접 입력해 주세요.');
+      throw new Error('AI 인식 실패 ('+gemRes.status+'). 직접 입력해 주세요.');
     }
+
     const gemData = await gemRes.json();
     const raw = gemData?.candidates?.[0]?.content?.parts?.[0]?.text;
     if(!raw) throw new Error('AI 응답이 없습니다. 다시 시도해주세요.');
@@ -2060,7 +2088,7 @@ async function doViewTeamMember(memberName){
   }
 }
 
-let sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:''};
+let sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:'',_ocrText:null};
 function PageScan(){
   let body='';
   if(sc.step===0)body=`
@@ -2092,13 +2120,32 @@ function PageScan(){
           <div style="font-size:13px;font-weight:600;color:var(--tx2);margin-bottom:4px">${sc.progress||'분석 중...'}</div>
           <div style="font-size:10.5px;color:var(--tx3)">Tesseract OCR → Gemini 구조화</div>
         </div>`:''}
-      ${sc.err?`<div style="color:var(--red);font-size:12px;padding:10px 12px;background:var(--rbg);border-radius:var(--rs);margin-bottom:10px;line-height:1.6">${sc.err}</div>`:''}
+      ${sc.err?`<div style="color:var(--red);font-size:12px;padding:10px 12px;background:var(--rbg);border-radius:var(--rs);margin-bottom:10px;line-height:1.6">${sc.err.replace(/\n/g,'<br>')}</div>`:''}
       ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">
         <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4" stroke-linecap="round"/></svg>
         AI 분석 시작
       </button>`:''}
+      ${sc.err&&!sc.loading?`<button class="btn bs mt2" onclick="doScanAI()">다시 시도</button>`:''}
       <button class="btn bs mt2" onclick="resetScan()">다시 선택</button>
     </div>`;
+
+  // OCR 성공했지만 Gemini 한도 초과 — 추출된 텍스트 보여주기
+  if(sc.step==='ocr_fallback'&&sc._ocrText){
+    const lines=sc._ocrText.split('\n').filter(l=>l.trim());
+    body=`<div style="padding:0 14px">
+      <img src="data:image/jpeg;base64,${sc.b64}" style="width:100%;border-radius:var(--r);margin-bottom:10px;border:1px solid var(--bd)">
+      <div style="background:var(--obg);border:1px solid rgba(232,146,58,.3);border-radius:var(--rs);padding:10px 12px;margin-bottom:10px">
+        <div style="font-size:11.5px;font-weight:700;color:var(--or);margin-bottom:6px">⚠ Gemini 한도 초과 — OCR 텍스트는 인식됨</div>
+        <div style="font-size:10.5px;color:var(--tx3)">아래 텍스트를 참고해 직접 입력하거나, 잠시 후 재시도하세요.</div>
+      </div>
+      <div style="background:var(--bg3);border:1px solid var(--bd2);border-radius:var(--rs);padding:10px 12px;margin-bottom:12px;font-size:11.5px;line-height:1.9;color:var(--tx2);font-family:var(--mo);white-space:pre-wrap;max-height:160px;overflow-y:auto">${lines.join('\n')}</div>
+      <div class="row g2">
+        <button class="btn bp f1" onclick="doScanAI()">Gemini 재시도</button>
+        <button class="btn bs f1" onclick="sc={...sc,step:1,err:null};render()">뒤로</button>
+      </div>
+      <button class="btn bs mt2" onclick="resetScan()">다시 선택</button>
+    </div>`;
+  }
   if(sc.step===2&&sc.parsed){
     const p=sc.parsed;
     const dupes=S.clients.filter(c=>sim(c.companyName,p.companyName||'')>0.75);
@@ -2162,23 +2209,30 @@ function onCardFile(input){
       const origKB=Math.round(e.target.result.length*0.75/1024);
       const compKB=Math.round(compressed.length*0.75/1024);
       console.log(`명함 압축: ${origKB}KB → ${compKB}KB (${w}×${h}px)`);
-      sc={step:1,b64:compressed,parsed:null,loading:false,err:null};render();
+      sc={step:1,b64:compressed,parsed:null,loading:false,err:null,progress:'',_ocrText:null};render();
     };
     img.src=e.target.result;
   };
   r.readAsDataURL(f);
 }
 async function doScanAI(){
-  sc={...sc,loading:true,err:null,progress:'OCR 준비 중...'};render();
+  sc={...sc,loading:true,err:null,progress:'OCR 준비 중...',_ocrText:null};render();
   try{
     const p=await Gem.card(sc.b64,(msg)=>{sc={...sc,progress:msg};render();});
     sc={...sc,step:2,parsed:p,loading:false,progress:''};
   }catch(e){
-    sc={...sc,loading:false,err:e.message,progress:''};
+    const isRateLimit = e.message.startsWith('RATE_LIMIT');
+    const ocrText = sc._ocrText||null;
+    const errMsg = isRateLimit
+      ? 'Gemini 요청 한도 초과'+(ocrText?'\n아래 OCR 텍스트로 직접 입력해보세요':'.\n잠시 후 재시도하거나 직접 입력해주세요.')
+      : e.message;
+    sc={...sc, loading:false, err:errMsg, progress:'',
+      step: isRateLimit&&ocrText ? 'ocr_fallback' : 1,
+    };
   }
   render();
 }
-function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:''};render();}function saveCardC(){
+function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:'',_ocrText:null};render();}function saveCardC(){
   const name=document.getElementById('f_co')?.value?.trim();if(!name){toast('회사명을 입력하세요');return;}
   const addr=document.getElementById('f_ad')?.value?.trim()||'';
   const c={id:uid(),companyName:name,branchName:document.getElementById('f_br')?.value?.trim()||'',
