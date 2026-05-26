@@ -520,30 +520,47 @@ const Gem={
       }
     }
 
-    // 2단계: Gemini로 구조화
+    // 2단계: Gemini로 구조화 (v1 엔드포인트 — 유료 키 호환)
     const gemKey = CFG.geminiKey;
     if(!gemKey) throw new Error('Gemini API 키가 설정되지 않았습니다.\n[설정 → Gemini API 키]에서 입력해주세요.');
 
     let gemParts;
-    let gemPrompt;
     if(extractedText){
       // Vision으로 텍스트를 뽑은 경우: 텍스트만 전송 (빠르고 저렴)
-      gemPrompt = `다음은 명함에서 추출한 텍스트다. 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.\n\n${extractedText}`;
+      const gemPrompt = `다음은 명함에서 추출한 텍스트다. 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.\n\n${extractedText}`;
       gemParts = [{text: gemPrompt}];
     } else {
       // Vision 없거나 실패: 이미지를 직접 Gemini에 전달 (폴백)
-      gemPrompt = '이 명함 이미지에서 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.';
-      gemParts = [{inlineData:{mimeType:'image/jpeg',data:b64}}, {text: gemPrompt}];
+      gemParts = [
+        {inlineData:{mimeType:'image/jpeg',data:b64}},
+        {text:'이 명함 이미지에서 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.'}
+      ];
     }
 
-    const gemRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${gemKey}`,
+    const _gemCall = () => fetch(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${gemKey}`,
       {method:'POST', headers:{'Content-Type':'application/json'},
        body: JSON.stringify({contents:[{parts:gemParts}], generationConfig:{temperature:0.1,maxOutputTokens:800}})}
     );
+
+    let gemRes = await _gemCall();
+    // 429 RPM 초과 시 자동 재시도 1회
+    if(gemRes.status === 429){
+      const e429 = await gemRes.json().catch(()=>({}));
+      const msg429 = e429?.error?.message || '';
+      const retryMatch = msg429.match(/retry in ([\d.]+)s/i);
+      const waitSec = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : 15;
+      toast(`잠시 후 자동 재시도합니다 (${waitSec}초)...`);
+      await new Promise(r=>setTimeout(r, waitSec*1000+500));
+      gemRes = await _gemCall();
+    }
     if(!gemRes.ok){
       const e = await gemRes.json().catch(()=>({}));
-      throw new Error(e?.error?.message || `Gemini 오류(${gemRes.status})`);
+      const msg = e?.error?.message || '';
+      if(gemRes.status===429 || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')){
+        throw new Error('AI 요청 한도를 초과했습니다.\n잠시 후 다시 시도해주세요. (분당 요청 한도 초과)');
+      }
+      throw new Error(`AI 인식 실패 (오류 ${gemRes.status}). 직접 입력해 주세요.`);
     }
     const gemData = await gemRes.json();
     const raw = gemData?.candidates?.[0]?.content?.parts?.[0]?.text;
