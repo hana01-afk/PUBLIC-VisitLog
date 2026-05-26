@@ -11,6 +11,7 @@
 <meta name="apple-mobile-web-app-title" content="VisitLog">
 <link rel="manifest" href="data:application/json,%7B%22name%22%3A%22VisitLog%20%ED%95%98%EB%82%98%EA%B0%90%EC%A0%95%22%2C%22short_name%22%3A%22VisitLog%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230D1B2A%22%2C%22theme_color%22%3A%22%230D1B2A%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%2520xmlns%3D%2527http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%2527%2520viewBox%3D%25270%25200%252048%252048%2527%253E%253Crect%2520width%3D%252748%2527%2520height%3D%252748%2527%2520rx%3D%252712%2527%2520fill%3D%2527%25230D1B2A%2527%2F%253E%253Ccircle%2520cx%3D%252724%2527%2520cy%3D%252720%2527%2520r%3D%25276%2527%2520fill%3D%2527%25233B9EFF%2527%2F%253E%253Cpath%2520d%3D%252712%252032c0-6%25204-10%252010-10h4c6%25200%252010%25204%252010%252010%2527%2520fill%3D%2527%25233B9EFF%2527%2F%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22192x192%22%7D%5D%7D">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <style>
@@ -200,6 +201,42 @@ const GEMINI_KEY_FALLBACK = ''; // 비워둠: 설정 화면에서 직접 입력
 const STORAGE_PREFIX = 'vl_hana_v5_user_';  // 사용자별 데이터 분리
 const STORAGE_LEGACY = 'vl_hana_v4';         // 마이그레이션용
 const CFG_KEY      = 'vl_hana_cfg';          // 전역 설정 (관리자가 설정, 모두 공유)
+
+// ── Tesseract.js 워커 (명함 OCR용, 지연 초기화) ──────────────
+let _tessWorker  = null;   // 생성된 워커 인스턴스
+let _tessReady   = false;  // 초기화 완료 여부
+let _tessLoading = false;  // 초기화 진행 중 여부
+
+async function initTesseract(onProgress){
+  if(_tessReady) return _tessWorker;
+  // 이미 초기화 중이면 완료될 때까지 대기
+  if(_tessLoading){
+    return new Promise(resolve=>{
+      const poll=setInterval(()=>{if(_tessReady){clearInterval(poll);resolve(_tessWorker);}},250);
+    });
+  }
+  _tessLoading=true;
+  onProgress&&onProgress('한국어 OCR 엔진 준비 중... (최초 1회)');
+  try{
+    _tessWorker=await Tesseract.createWorker(['kor','eng'],1,{
+      logger:m=>{
+        if(m.status==='loading language traineddata'){
+          const pct=Math.round((m.progress||0)*100);
+          onProgress&&onProgress(`언어 팩 로딩 중... ${pct}%`);
+        } else if(m.status==='initializing tesseract'){
+          onProgress&&onProgress('OCR 엔진 초기화 중...');
+        }
+      }
+    });
+    _tessReady=true;
+    console.log('[Tesseract] 한국어 OCR 워커 준비 완료');
+  }catch(e){
+    _tessLoading=false;
+    throw new Error('OCR 엔진 초기화 실패: '+e.message);
+  }
+  _tessLoading=false;
+  return _tessWorker;
+}
 
 const CATEGORIES = ['제1금융권','제2금융권/단위조합','공공기관/특수기관','일반기업','증권사/보험사'];
 const DEF_CYCLES = {'제1금융권':30,'제2금융권/단위조합':60,'공공기관/특수기관':90,'일반기업':45,'증권사/보험사':30};
@@ -493,94 +530,79 @@ const Gem={
     if(!txt)throw new Error('Gemini 응답 없음');
     return txt;
   },
-  // ── 명함 OCR: Cloud Vision → Gemini 2단계 ─────────────────────
-  async card(b64){
+  // ── 명함 OCR: Tesseract.js(로컬) → Gemini 구조화 ─────────────
+  async card(b64, onProgress){
     let extractedText = null;
 
-    // 1단계: Cloud Vision API로 텍스트 추출 (Maps API 키 공유 — Vision API 활성화 필요)
-    if(CFG.mapsKey){
-      try{
-        const vRes = await fetch(
-          `https://vision.googleapis.com/v1/images:annotate?key=${CFG.mapsKey}`,
-          {method:'POST', headers:{'Content-Type':'application/json'},
-           body: JSON.stringify({requests:[{
-             image:{content:b64},
-             features:[{type:'TEXT_DETECTION'}]
-           }]})}
-        );
-        if(vRes.ok){
-          const vData = await vRes.json();
-          extractedText = vData?.responses?.[0]?.fullTextAnnotation?.text || null;
-          if(extractedText) console.log('[Vision OCR] 텍스트 추출 성공:', extractedText.length, '자');
-        } else {
-          console.warn('[Vision OCR] 오류 (Gemini 이미지 방식으로 폴백):', vRes.status);
-        }
-      }catch(vErr){
-        console.warn('[Vision OCR] 요청 실패 (Gemini 이미지 방식으로 폴백):', vErr.message);
+    // 1단계: Tesseract.js로 텍스트 추출 (브라우저 내장, API 호출 없음)
+    try{
+      const worker = await initTesseract(onProgress);
+      onProgress&&onProgress('명함 텍스트 인식 중...');
+      const { data:{ text, confidence } } = await worker.recognize(
+        'data:image/jpeg;base64,'+b64
+      );
+      extractedText = (text||'').trim();
+      console.log(`[Tesseract] 완료 — ${extractedText.length}자, 신뢰도 ${Math.round(confidence||0)}%`);
+      if(!extractedText || extractedText.length < 5){
+        console.warn('[Tesseract] 추출 텍스트 없음, Gemini 이미지 방식으로 폴백');
+        extractedText = null;
       }
+    }catch(tErr){
+      console.warn('[Tesseract] 실패, Gemini 이미지 방식으로 폴백:', tErr.message);
+      extractedText = null;
     }
 
-    // 2단계: Gemini로 구조화 (v1 엔드포인트 — 유료 키 호환)
+    // 2단계: Gemini로 구조화
     const gemKey = CFG.geminiKey;
     if(!gemKey) throw new Error('Gemini API 키가 설정되지 않았습니다.\n[설정 → Gemini API 키]에서 입력해주세요.');
 
+    onProgress&&onProgress('Gemini로 명함 정보 정리 중...');
+
     let gemParts;
     if(extractedText){
-      // Vision으로 텍스트를 뽑은 경우: 텍스트만 전송 (빠르고 저렴)
-      const gemPrompt = `다음은 명함에서 추출한 텍스트다. 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.\n\n${extractedText}`;
-      gemParts = [{text: gemPrompt}];
-    } else {
-      // Vision 없거나 실패: 이미지를 직접 Gemini에 전달 (폴백)
+      // 텍스트만 전송 — 이미지 대비 토큰 수십분의 1 수준
+      gemParts = [{text:
+        `다음은 명함에서 추출한 텍스트다. 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.\n\n${extractedText}`
+      }];
+    }else{
+      // 폴백: 이미지 직접 전송 (Tesseract 실패 시)
       gemParts = [
         {inlineData:{mimeType:'image/jpeg',data:b64}},
         {text:'이 명함 이미지에서 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.'}
       ];
     }
 
-    const _gemCall = () => fetch(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${gemKey}`,
+    const gemRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${gemKey}`,
       {method:'POST', headers:{'Content-Type':'application/json'},
-       body: JSON.stringify({contents:[{parts:gemParts}], generationConfig:{temperature:0.1,maxOutputTokens:800}})}
+       body: JSON.stringify({contents:[{parts:gemParts}], generationConfig:{temperature:0.1,maxOutputTokens:600}})}
     );
-
-    let gemRes = await _gemCall();
-    // 429 RPM 초과 시 자동 재시도 1회
-    if(gemRes.status === 429){
-      const e429 = await gemRes.json().catch(()=>({}));
-      const msg429 = e429?.error?.message || '';
-      const retryMatch = msg429.match(/retry in ([\d.]+)s/i);
-      const waitSec = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : 15;
-      toast(`잠시 후 자동 재시도합니다 (${waitSec}초)...`);
-      await new Promise(r=>setTimeout(r, waitSec*1000+500));
-      gemRes = await _gemCall();
-    }
     if(!gemRes.ok){
       const e = await gemRes.json().catch(()=>({}));
-      const msg = e?.error?.message || '';
-      if(gemRes.status===429 || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')){
-        throw new Error('AI 요청 한도를 초과했습니다.\n잠시 후 다시 시도해주세요. (분당 요청 한도 초과)');
+      const msg = e?.error?.message||'';
+      if(gemRes.status===429||msg.includes('quota')||msg.includes('RESOURCE_EXHAUSTED')){
+        throw new Error('AI 요청 한도 초과.\n잠시 후 다시 시도해주세요.');
       }
-      throw new Error(`AI 인식 실패 (오류 ${gemRes.status}). 직접 입력해 주세요.`);
+      throw new Error('AI 인식 실패. 직접 입력해 주세요.');
     }
     const gemData = await gemRes.json();
     const raw = gemData?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if(!raw) throw new Error('AI 응답을 받지 못했습니다. 다시 시도해주세요.');
+    if(!raw) throw new Error('AI 응답이 없습니다. 다시 시도해주세요.');
 
-    // ```json 마크다운 펜스 제거 후 파싱
-    const cleaned = raw.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, m => m.replace(/```json\n?|```\n?/g,'')).trim();
+    // ```json 펜스 제거 후 파싱
+    const cleaned = raw.replace(/```json\n?|```\n?/g,'').trim();
     try{
-      const jsonStr = cleaned.startsWith('{') ? cleaned : cleaned.match(/\{[\s\S]*\}/)?.[0] || cleaned;
-      const parsed = JSON.parse(jsonStr);
-      // contactTitle → contactTitle (그대로), phone → contactPhone 정규화
+      const jsonStr = cleaned.startsWith('{') ? cleaned : (cleaned.match(/\{[\s\S]*\}/)?.[0]||cleaned);
+      const p = JSON.parse(jsonStr);
       return {
-        companyName:  parsed.companyName  || '',
-        branchName:   parsed.branchName   || '',
-        contactName:  parsed.contactName  || '',
-        contactTitle: parsed.contactTitle || '',
-        contactPhone: parsed.phone        || parsed.contactPhone || '',
-        fax:          parsed.fax          || '',
-        email:        parsed.email        || '',
-        address:      parsed.address      || '',
+        companyName:  p.companyName  || '',
+        branchName:   p.branchName   || '',
+        contactName:  p.contactName  || '',
+        contactTitle: p.contactTitle || '',
+        contactPhone: p.phone        || p.contactPhone || '',
+        fax:          p.fax          || '',
+        email:        p.email        || '',
+        address:      p.address      || '',
       };
     }catch{
       throw new Error('AI 인식 실패. 직접 입력해 주세요.');
@@ -747,8 +769,12 @@ function initDetailMap(c){
 let page='list',pageParam=null;
 function go(p,param=null){
   page=p;pageParam=param;window.scrollTo(0,0);render();
-  if(p==="settings"&&S?.user?.role==="admin"&&CFG.gasUrl){
+  if(p==='settings'&&S?.user?.role==='admin'&&CFG.gasUrl){
     setTimeout(()=>_refreshMembers(),300);
+  }
+  // 스캔 페이지 진입 시 Tesseract 워커 백그라운드 사전 초기화
+  if(p==='scan'&&!_tessReady&&!_tessLoading){
+    setTimeout(()=>initTesseract().then(()=>render()).catch(()=>{}), 500);
   }
 }
 
@@ -2034,7 +2060,7 @@ async function doViewTeamMember(memberName){
   }
 }
 
-let sc={step:0,b64:null,parsed:null,loading:false,err:null};
+let sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:''};
 function PageScan(){
   let body='';
   if(sc.step===0)body=`
@@ -2048,18 +2074,29 @@ function PageScan(){
     <div class="card" style="margin-top:0">
       <div style="font-size:11.5px;color:var(--tx2);line-height:1.75">
         <b style="color:var(--tx)">AI 명함 인식 안내</b><br>
-        ${CFG.mapsKey
-          ?'• <b style="color:var(--teal)">Vision + Gemini 2단계</b> 인식 (더 빠르고 정확)<br>• Cloud Vision으로 텍스트 추출 → Gemini로 구조화'
-          :'• Gemini 2.0 Flash로 자동 분석<br>• Maps API 키 설정 시 Vision+Gemini 2단계로 정확도 향상'}
-        <br>• 인식 후 내용 수정 가능<br>• 저장 시 거래처 목록에 자동 추가
+        • <b style="color:var(--teal)">Tesseract OCR</b> (브라우저 내장) → 텍스트 추출<br>
+        • <b style="color:var(--ac)">Gemini 2.0 Flash</b> → 정보 구조화<br>
+        • API 호출 최소화 · 요청 한도 초과 없음<br>
+        • 인식 후 내용 수정 후 저장 가능
       </div>
+      ${!_tessReady?`<div style="font-size:10.5px;color:var(--tx3);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">
+        💡 첫 실행 시 한국어 팩 다운로드(~20MB)로 10초 내외 소요됩니다
+      </div>`:'<div style="font-size:10.5px;color:var(--gn);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">✓ OCR 엔진 준비됨 — 즉시 분석 가능</div>'}
     </div>`;
   if(sc.step===1)body=`
     <div style="padding:0 14px">
       <img src="data:image/jpeg;base64,${sc.b64}" style="width:100%;border-radius:var(--r);margin-bottom:12px;border:1px solid var(--bd)">
-      ${sc.loading?`<div class="row g2" style="justify-content:center;padding:16px"><div class="spin"></div><span style="font-size:13px;color:var(--tx2)">${CFG.mapsKey?'Vision 텍스트 추출 → Gemini 구조화 중...':'Gemini 명함 분석 중...'}</span></div>`:''}
-      ${sc.err?`<div style="color:var(--red);font-size:12px;padding:8px;background:var(--rbg);border-radius:var(--rs);margin-bottom:8px">${sc.err}</div>`:''}
-      ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">AI 분석 시작</button>`:''}
+      ${sc.loading?`
+        <div style="text-align:center;padding:18px 0">
+          <div class="spin" style="width:28px;height:28px;border-width:3px;margin:0 auto 10px"></div>
+          <div style="font-size:13px;font-weight:600;color:var(--tx2);margin-bottom:4px">${sc.progress||'분석 중...'}</div>
+          <div style="font-size:10.5px;color:var(--tx3)">Tesseract OCR → Gemini 구조화</div>
+        </div>`:''}
+      ${sc.err?`<div style="color:var(--red);font-size:12px;padding:10px 12px;background:var(--rbg);border-radius:var(--rs);margin-bottom:10px;line-height:1.6">${sc.err}</div>`:''}
+      ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">
+        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4" stroke-linecap="round"/></svg>
+        AI 분석 시작
+      </button>`:''}
       <button class="btn bs mt2" onclick="resetScan()">다시 선택</button>
     </div>`;
   if(sc.step===2&&sc.parsed){
@@ -2089,7 +2126,7 @@ function PageScan(){
           <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
         </button>
         <div><div class="hdr-t" style="font-size:16px">신규 거래처 등록</div>
-        <div class="hdr-s">명함 AI 인식 (Vision + Gemini)</div></div>
+        <div class="hdr-s">Tesseract OCR + Gemini</div></div>
       </div>
     </div>
   </div>
@@ -2131,8 +2168,17 @@ function onCardFile(input){
   };
   r.readAsDataURL(f);
 }
-async function doScanAI(){sc={...sc,loading:true,err:null};render();try{const p=await Gem.card(sc.b64);sc={...sc,step:2,parsed:p,loading:false};}catch(e){sc={...sc,loading:false,err:e.message};}render();}
-function saveCardC(){
+async function doScanAI(){
+  sc={...sc,loading:true,err:null,progress:'OCR 준비 중...'};render();
+  try{
+    const p=await Gem.card(sc.b64,(msg)=>{sc={...sc,progress:msg};render();});
+    sc={...sc,step:2,parsed:p,loading:false,progress:''};
+  }catch(e){
+    sc={...sc,loading:false,err:e.message,progress:''};
+  }
+  render();
+}
+function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:''};render();}function saveCardC(){
   const name=document.getElementById('f_co')?.value?.trim();if(!name){toast('회사명을 입력하세요');return;}
   const addr=document.getElementById('f_ad')?.value?.trim()||'';
   const c={id:uid(),companyName:name,branchName:document.getElementById('f_br')?.value?.trim()||'',
@@ -2154,7 +2200,7 @@ function saveManual(){
   if(addr)setTimeout(()=>geocodeClient(c.id),500);
   go('detail',c.id);
 }
-function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null};render();}
+
 
 /* ── SETTINGS ── */
 let syncProgress='';
@@ -2214,9 +2260,8 @@ function PageSettings(){
         <input type="password" id="s_mk" value="${CFG.mapsKey}" placeholder="AIza..."></div>
       <button class="btn bs bsm" style="width:auto" onclick="saveMapsKey()">저장 및 지도 로드</button>
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.8">
-        Maps JavaScript API + Geocoding API + <b style="color:var(--ac)">Cloud Vision API</b> 활성화 필요.<br>
-        Vision API가 활성화된 동일 키로 명함 OCR 1단계(텍스트 추출)를 처리합니다.<br>
-        미설정 시 Gemini가 이미지를 직접 분석합니다.
+        Maps JavaScript API + Geocoding API + Places API 활성화 필요.<br>
+        미설정 시 Gemini AI로 주소 검색을 대체합니다.
       </div>
     </div>
 
