@@ -228,7 +228,6 @@ let CFG = {
   gasUrl:      _cfg.gasUrl      || '',  // GAS Web App URL (백엔드)
   mapsKey:     _cfg.mapsKey     || '',
   geminiKey:   _cfg.geminiKey   || '',  // Gemini API 키 (관리자 설정)
-  visionKey:   _cfg.visionKey   || '',  // Google Cloud Vision API 키 (명함 OCR 1단계)
   adminPwHash: _cfg.adminPwHash || '',
   // 팀원 관리 (관리자가 추가/승인)
 };
@@ -498,11 +497,11 @@ const Gem={
   async card(b64){
     let extractedText = null;
 
-    // 1단계: Cloud Vision API로 텍스트 추출 (visionKey 있을 때만)
-    if(CFG.visionKey){
+    // 1단계: Cloud Vision API로 텍스트 추출 (Maps API 키 공유 — Vision API 활성화 필요)
+    if(CFG.mapsKey){
       try{
         const vRes = await fetch(
-          `https://vision.googleapis.com/v1/images:annotate?key=${CFG.visionKey}`,
+          `https://vision.googleapis.com/v1/images:annotate?key=${CFG.mapsKey}`,
           {method:'POST', headers:{'Content-Type':'application/json'},
            body: JSON.stringify({requests:[{
              image:{content:b64},
@@ -2032,16 +2031,16 @@ function PageScan(){
     <div class="card" style="margin-top:0">
       <div style="font-size:11.5px;color:var(--tx2);line-height:1.75">
         <b style="color:var(--tx)">AI 명함 인식 안내</b><br>
-        ${CFG.visionKey
+        ${CFG.mapsKey
           ?'• <b style="color:var(--teal)">Vision + Gemini 2단계</b> 인식 (더 빠르고 정확)<br>• Cloud Vision으로 텍스트 추출 → Gemini로 구조화'
-          :'• Gemini 2.0 Flash로 자동 분석<br>• Vision API 키 설정 시 정확도가 향상됩니다'}
+          :'• Gemini 2.0 Flash로 자동 분석<br>• Maps API 키 설정 시 Vision+Gemini 2단계로 정확도 향상'}
         <br>• 인식 후 내용 수정 가능<br>• 저장 시 거래처 목록에 자동 추가
       </div>
     </div>`;
   if(sc.step===1)body=`
     <div style="padding:0 14px">
       <img src="data:image/jpeg;base64,${sc.b64}" style="width:100%;border-radius:var(--r);margin-bottom:12px;border:1px solid var(--bd)">
-      ${sc.loading?`<div class="row g2" style="justify-content:center;padding:16px"><div class="spin"></div><span style="font-size:13px;color:var(--tx2)">${CFG.visionKey?'Vision 텍스트 추출 → Gemini 구조화 중...':'Gemini 명함 분석 중...'}</span></div>`:''}
+      ${sc.loading?`<div class="row g2" style="justify-content:center;padding:16px"><div class="spin"></div><span style="font-size:13px;color:var(--tx2)">${CFG.mapsKey?'Vision 텍스트 추출 → Gemini 구조화 중...':'Gemini 명함 분석 중...'}</span></div>`:''}
       ${sc.err?`<div style="color:var(--red);font-size:12px;padding:8px;background:var(--rbg);border-radius:var(--rs);margin-bottom:8px">${sc.err}</div>`:''}
       ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">AI 분석 시작</button>`:''}
       <button class="btn bs mt2" onclick="resetScan()">다시 선택</button>
@@ -2194,27 +2193,13 @@ function PageSettings(){
 
     <div class="slbl">Google Maps API 키</div>
     <div class="card">
-      <div class="ig"><label class="il">Maps API 키 (지도 · 좌표검색)</label>
+      <div class="ig"><label class="il">Maps API 키 (지도 · 좌표검색 · 명함 OCR)</label>
         <input type="password" id="s_mk" value="${CFG.mapsKey}" placeholder="AIza..."></div>
       <button class="btn bs bsm" style="width:auto" onclick="saveMapsKey()">저장 및 지도 로드</button>
-      <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.7">
-        Maps JavaScript API + Geocoding API 활성화 필요 · 미설정 시 Gemini AI로 대체
-      </div>
-    </div>
-
-    <div class="slbl">Google Vision API 키</div>
-    <div class="card">
-      <div class="ig"><label class="il">Vision API 키 (명함 OCR 1단계 · 선택)</label>
-        <input type="password" id="s_vk" value="${CFG.visionKey}" placeholder="AIza..."></div>
-      <div class="row g2" style="flex-wrap:wrap;align-items:center">
-        <button class="btn bs bsm" style="width:auto" onclick="saveVisionKey()">저장</button>
-        ${CFG.visionKey
-          ? '<span style="font-size:10.5px;color:var(--gn)">✓ 키 설정됨 — Vision+Gemini 2단계 인식 활성화</span>'
-          : '<span style="font-size:10.5px;color:var(--tx3)">미설정 — Gemini 단독 인식 (더 느림)</span>'}
-      </div>
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.8">
-        Cloud Vision API로 텍스트 추출 후 Gemini로 구조화.<br>
-        미설정 시 Gemini가 이미지 직접 분석 (기존 방식).
+        Maps JavaScript API + Geocoding API + <b style="color:var(--ac)">Cloud Vision API</b> 활성화 필요.<br>
+        Vision API가 활성화된 동일 키로 명함 OCR 1단계(텍스트 추출)를 처리합니다.<br>
+        미설정 시 Gemini가 이미지를 직접 분석합니다.
       </div>
     </div>
 
@@ -2481,13 +2466,6 @@ function saveGeminiKey(){
   render();
 }
 
-function saveVisionKey(){
-  const key=document.getElementById('s_vk')?.value?.trim()||'';
-  CFG={...CFG,visionKey:key};saveCfg(CFG);
-  toast(key?'✓ Vision API 키 저장됨 — 명함 OCR 2단계 방식 활성화':'Vision 키가 삭제됐습니다 (Gemini 단독으로 작동)');
-  render();
-}
-
 async function doChangePw(){
   const cur=document.getElementById('pw_cur')?.value||'';
   const nw=document.getElementById('pw_new')?.value||'';
@@ -2592,7 +2570,6 @@ function makeConfigLink(){
   const data={};
   if(CFG.mapsKey)   data.mk=CFG.mapsKey;
   if(CFG.geminiKey) data.gk=CFG.geminiKey;
-  if(CFG.visionKey) data.vk=CFG.visionKey;
   const b64=encodeURIComponent(btoa(JSON.stringify(data)));
   const base=window.location.origin+window.location.pathname;
   return `${base}?cfg=${b64}`;
@@ -2792,9 +2769,6 @@ window.addEventListener('offline', ()=>{ updateOfflineBanner(); });
     }
     if(decoded.gk && decoded.gk!==CFG.geminiKey){
       CFG={...CFG,geminiKey:decoded.gk};changed.push('Gemini API 키');
-    }
-    if(decoded.vk && decoded.vk!==CFG.visionKey){
-      CFG={...CFG,visionKey:decoded.vk};changed.push('Vision API 키');
     }
     if(changed.length){
       saveCfg(CFG);
