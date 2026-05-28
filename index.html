@@ -678,54 +678,87 @@ const API = {
 
 // 5. NAVER MAPS
 // ═══════════════════════════════════════════════
-let _nmap=null,_nmarkers=[],_gpsWatcher=null;
+let _nmap=null, _nmarkers=[], _gpsWatcher=null;
+let _nmapElId=null; // 현재 _nmap이 바인딩된 #gmap 엘리먼트 식별자
 
 function loadMapsScript(){
-  const key=CFG.mapsKey; // 네이버 클라우드 플랫폼 Client ID
+  const key=CFG.mapsKey;
   if(!key||document.getElementById('nmaps-script'))return;
   const s=document.createElement('script');
   s.id='nmaps-script';
-  // geocoder 서브모듈: 주소↔좌표 변환 (naver.maps.Service.geocode)
   s.src=`https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${key}&submodules=geocoder&callback=onMapsLoaded`;
   s.async=true;
   document.head.appendChild(s);
 }
-window.onMapsLoaded=()=>{ if(page==='map') initGMap(); };
+
+// 네이버 SDK 로드 완료 콜백
+window.onMapsLoaded=()=>{
+  _nmap=null; _nmapElId=null; // 스크립트 재로드 시 리셋
+  if(page==='map') scheduleInitGMap();
+};
+
+// render() 직후 동기 호출 시 DOM 레이아웃이 아직 미완성일 수 있으므로
+// 항상 setTimeout(0)으로 한 틱 뒤에 실행
+function scheduleInitGMap(){
+  setTimeout(()=>{ if(page==='map') initGMap(); }, 0);
+}
 
 function initGMap(){
-  if(!window.naver?.maps){
-    const el=document.getElementById('gmap');
-    if(el) el.innerHTML=`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--tx3);font-size:12px;flex-direction:column;gap:8px"><div class="spin"></div>지도 로딩 중...</div>`;
+  if(!window.naver?.maps) return;
+  const el=document.getElementById('gmap');
+  if(!el) return;
+
+  // ── 이미 같은 엘리먼트에 지도가 초기화되어 있으면 마커만 갱신 ──
+  const elStamp=el.getAttribute('data-nmap-stamp');
+  if(_nmap && _nmapElId && elStamp===_nmapElId){
+    // GPS 마커 업데이트 (기존 GPS 마커 제거 후 재추가)
+    if(_gpsMarker){ _gpsMarker.setMap(null); _gpsMarker=null; }
+    if(gps) _addGpsMarker();
+    placeMapMarkers();
     return;
   }
-  const el=document.getElementById('gmap');if(!el)return;
-  const center=gps?new naver.maps.LatLng(gps.lat,gps.lng):new naver.maps.LatLng(37.5665,126.9780);
+
+  // ── 신규 초기화 ──────────────────────────────────────────────
+  // 기존 마커 정리
+  _nmarkers.forEach(m=>{ try{m.setMap(null);}catch{} }); _nmarkers=[];
+  if(_gpsMarker){ try{_gpsMarker.setMap(null);}catch{} _gpsMarker=null; }
+
+  // 엘리먼트 스탬프 부여 (재사용 판별용)
+  _nmapElId='nmap_'+Date.now();
+  el.setAttribute('data-nmap-stamp', _nmapElId);
+
+  const center=gps
+    ? new naver.maps.LatLng(gps.lat,gps.lng)
+    : new naver.maps.LatLng(37.5665,126.9780);
 
   _nmap=new naver.maps.Map(el,{
     center, zoom:15,
     mapTypeControl:false,
     zoomControl:true,
-    zoomControlOptions:{
-      position:naver.maps.Position.TOP_RIGHT,
-      style:naver.maps.ZoomControlStyle.SMALL,
-    },
+    zoomControlOptions:{ position:naver.maps.Position.TOP_RIGHT },
     scaleControl:false,
     logoControl:true,
     mapDataControl:false,
   });
 
-  if(gps){
-    new naver.maps.Marker({
-      position:new naver.maps.LatLng(gps.lat,gps.lng),
-      map:_nmap,
-      icon:{
-        content:`<div style="width:16px;height:16px;border-radius:50%;background:#3B9EFF;border:3px solid #fff;box-shadow:0 2px 8px rgba(59,158,255,.7)"></div>`,
-        anchor:new naver.maps.Point(8,8),
-      },
-      title:'현재 위치',
-    });
-  }
+  if(gps) _addGpsMarker();
   placeMapMarkers();
+}
+
+// 현재위치 마커 — 별도 변수로 관리해 재사용
+let _gpsMarker=null;
+function _addGpsMarker(){
+  if(!_nmap||!gps) return;
+  _gpsMarker=new naver.maps.Marker({
+    position:new naver.maps.LatLng(gps.lat,gps.lng),
+    map:_nmap,
+    icon:{
+      content:`<div style="width:16px;height:16px;border-radius:50%;background:#3B9EFF;border:3px solid #fff;box-shadow:0 2px 8px rgba(59,158,255,.7)"></div>`,
+      anchor:new naver.maps.Point(8,8),
+    },
+    title:'현재 위치',
+    zIndex:999,
+  });
 }
 
 // ── 마커 커스텀 HTML 생성 (이름 라벨 포함) ───────────────────
@@ -747,6 +780,23 @@ function _makeIwContent(c, color, u){
     ${c.contactName?`<div style="font-size:11px;font-weight:600;color:#444;margin-bottom:6px">👤 ${c.contactName}</div>`:''}
     <a href="#" onclick="event.preventDefault();go('detail','${c.id}')" style="display:block;text-align:center;font-size:12px;font-weight:700;color:#fff;background:#3B9EFF;padding:5px 0;border-radius:6px;text-decoration:none">상세 보기 →</a>
   </div>`;
+}
+
+// ── 슬라이더 oninput용: 지도는 유지한 채 근처 목록 DOM만 갱신 ──
+function _refreshNearby(){
+  const listEl=document.getElementById('nearby-list');
+  const lblEl=document.getElementById('nearby-label');
+  if(!listEl||!lblEl||!gps) return;
+  const nearby=S.clients.filter(c=>c.lat&&c.lng&&hav(gps.lat,gps.lng,c.lat,c.lng)<=mapRadius)
+    .map(c=>({...c,dist:hav(gps.lat,gps.lng,c.lat,c.lng),u:getU(c)})).sort((a,b)=>a.dist-b.dist);
+  lblEl.textContent=`근처 거래처 (${nearby.length}곳 / 반경 ${mapRadius}m)`;
+  listEl.innerHTML=nearby.map(c=>`
+    <div class="card cc ${c.u.cls}" onclick="go('detail','${c.id}')">
+      <div class="cs"></div>
+      <div class="cb"><div class="cn">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
+        <div class="cm">${c.dist}m · ${c.u.dd}</div></div>
+      <button class="btn bp bsm" onclick="event.stopPropagation();go('visit','${c.id}')">방문</button>
+    </div>`).join('')||`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">주변에 좌표가 등록된 거래처가 없습니다</div>`;
 }
 
 function placeMapMarkers(){
@@ -824,6 +874,8 @@ function initDetailMap(c){
 // ═══════════════════════════════════════════════
 let page='list',pageParam=null;
 function go(p,param=null){
+  // 지도 페이지 이탈 시 지도 인스턴스 리셋 → 재방문 시 새 #gmap에 재초기화
+  if(page==='map'&&p!=='map'){ _nmap=null; _nmapElId=null; _gpsMarker=null; _nmarkers=[]; }
   page=p;pageParam=param;window.scrollTo(0,0);render();
   if(p==='settings'&&S?.user?.role==='admin'&&CFG.gasUrl){
     setTimeout(()=>_refreshMembers(),300);
@@ -854,7 +906,8 @@ function reqGPS(){
     if(page==='map'&&_nmap){
       _nmap.panTo(new naver.maps.LatLng(gps.lat,gps.lng));
       _nmap.setZoom(16);
-      new naver.maps.Marker({
+      if(_gpsMarker) _gpsMarker.setMap(null);
+      _gpsMarker=new naver.maps.Marker({
         position:new naver.maps.LatLng(gps.lat,gps.lng),
         map:_nmap,
         icon:{
@@ -862,8 +915,9 @@ function reqGPS(){
           anchor:new naver.maps.Point(8,8),
         },
         title:`현재 위치 (정확도 ±${gps.accuracy}m)`,
+        zIndex:999,
       });
-    }else if(page==='map'){initGMap();}
+    }else if(page==='map'){ scheduleInitGMap(); }
   };
 
   watchId=navigator.geolocation.watchPosition(
@@ -1682,12 +1736,14 @@ function PageMap(){
       <div class="il">표시 반경</div>
       <div class="row g2">
         <input type="range" min="100" max="3000" step="100" value="${mapRadius}"
-          oninput="mapRadius=parseInt(this.value);render()" style="flex:1">
-        <span style="font-family:var(--mo);font-size:13px;min-width:55px;text-align:right;color:var(--ac)">${mapRadius}m</span>
+          oninput="mapRadius=parseInt(this.value);document.getElementById('map-radius-val').textContent=mapRadius+'m';_refreshNearby()"
+          onchange="render()" style="flex:1">
+        <span id="map-radius-val" style="font-family:var(--mo);font-size:13px;min-width:55px;text-align:right;color:var(--ac)">${mapRadius}m</span>
       </div>
     </div>
 
-    <div class="slbl">근처 거래처 ${gps?`(${nearby.length}곳 / 반경 ${mapRadius}m)`:''}</div>
+    <div id="nearby-label" class="slbl">근처 거래처 ${gps?`(${nearby.length}곳 / 반경 ${mapRadius}m)`:''}</div>
+    <div id="nearby-list">
     ${!gps?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">📍 위치 인식 버튼을 눌러주세요</div>`:''}
     ${gps&&!nearby.length?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">주변에 좌표가 등록된 거래처가 없습니다</div>`:''}
     ${nearby.map(c=>`
@@ -1697,6 +1753,7 @@ function PageMap(){
         <div class="cm">${c.dist}m · ${c.u.dd}</div></div>
       <button class="btn bp bsm" onclick="event.stopPropagation();go('visit','${c.id}')">방문</button>
     </div>`).join('')}
+    </div>
 
     ${noCoord.length?`
     <div class="slbl">좌표 미등록 거래처 (${noCoord.length}곳)</div>
@@ -3027,12 +3084,12 @@ function render(){
     </nav>`;
 
   if(page==='map'){
-    if(CFG.mapsKey&&!window.naver?.maps)loadMapsScript();
-    else if(window.naver?.maps)initGMap();
+    if(CFG.mapsKey&&!window.naver?.maps) loadMapsScript();
+    else if(window.naver?.maps) scheduleInitGMap(); // ← 반드시 async(setTimeout 0)로 호출
   }
   if(page==='detail'){
     const c=S.clients.find(x=>x.id===pageParam);
-    if(c?.lat&&CFG.mapsKey&&window.naver?.maps)initDetailMap(c);
+    if(c?.lat&&CFG.mapsKey&&window.naver?.maps) setTimeout(()=>initDetailMap(c),0);
   }
 }
 
