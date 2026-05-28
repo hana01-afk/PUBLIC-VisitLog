@@ -679,106 +679,131 @@ const API = {
 // 5. NAVER MAPS
 // ═══════════════════════════════════════════════
 let _nmap=null, _nmarkers=[], _gpsWatcher=null;
-let _nmapElId=null; // 현재 _nmap이 바인딩된 #gmap 엘리먼트 식별자
+let _nmapElId=null;   // 현재 _nmap이 바인딩된 #gmap 엘리먼트 스탬프
+let _gpsMarker=null;  // 현재위치 마커 — 별도 관리
+let _openIw=null;     // 현재 열린 InfoWindow (하나만 유지)
 
+// ── 스크립트 로드 ────────────────────────────────────────────
 function loadMapsScript(){
   const key=CFG.mapsKey;
-  if(!key||document.getElementById('nmaps-script'))return;
+  if(!key) return;
+  // 이미 로드됐거나 스크립트 태그가 존재하면 스킵
+  if(window.naver?.maps?.Map) { scheduleInitGMap(); return; }
+  if(document.getElementById('nmaps-script')) return;
   const s=document.createElement('script');
   s.id='nmaps-script';
+  // submodules=geocoder : naver.maps.Service.geocode 사용에 필요
   s.src=`https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${key}&submodules=geocoder&callback=onMapsLoaded`;
-  s.async=true;
+  s.onerror=()=>{ toast('⚠ 네이버 지도 스크립트 로드 실패 — Client ID 또는 서비스 URL을 확인하세요'); };
   document.head.appendChild(s);
 }
 
-// 네이버 SDK 로드 완료 콜백
+// 네이버 SDK 로드 완료 콜백 (URL callback= 파라미터로 자동 호출)
 window.onMapsLoaded=()=>{
-  _nmap=null; _nmapElId=null; // 스크립트 재로드 시 리셋
+  _nmap=null; _nmapElId=null;
   if(page==='map') scheduleInitGMap();
 };
 
-// render() 직후 동기 호출 시 DOM 레이아웃이 아직 미완성일 수 있으므로
-// 항상 setTimeout(0)으로 한 틱 뒤에 실행
+// render() 직후에는 DOM 레이아웃이 미완성일 수 있으므로
+// 항상 setTimeout(0)으로 한 틱 뒤 실행
 function scheduleInitGMap(){
   setTimeout(()=>{ if(page==='map') initGMap(); }, 0);
 }
 
 function initGMap(){
-  if(!window.naver?.maps) return;
+  if(!window.naver?.maps?.Map) return; // SDK 미로드
   const el=document.getElementById('gmap');
-  if(!el) return;
+  if(!el||el.offsetParent===null) return; // 엘리먼트 없거나 숨겨짐
 
-  // ── 이미 같은 엘리먼트에 지도가 초기화되어 있으면 마커만 갱신 ──
-  const elStamp=el.getAttribute('data-nmap-stamp');
-  if(_nmap && _nmapElId && elStamp===_nmapElId){
-    // GPS 마커 업데이트 (기존 GPS 마커 제거 후 재추가)
+  // ── 이미 이 엘리먼트에 지도가 붙어 있으면 마커만 갱신 ──────
+  if(_nmap && _nmapElId && el.getAttribute('data-nmap-stamp')===_nmapElId){
     if(_gpsMarker){ _gpsMarker.setMap(null); _gpsMarker=null; }
     if(gps) _addGpsMarker();
     placeMapMarkers();
     return;
   }
 
-  // ── 신규 초기화 ──────────────────────────────────────────────
-  // 기존 마커 정리
-  _nmarkers.forEach(m=>{ try{m.setMap(null);}catch{} }); _nmarkers=[];
+  // ── 신규 초기화 ──────────────────────────────────────────
+  _nmarkers.forEach(m=>{ try{m.setMap(null);}catch{} });
+  _nmarkers=[];
   if(_gpsMarker){ try{_gpsMarker.setMap(null);}catch{} _gpsMarker=null; }
+  if(_openIw){ try{_openIw.close();}catch{} _openIw=null; }
 
-  // 엘리먼트 스탬프 부여 (재사용 판별용)
-  _nmapElId='nmap_'+Date.now();
+  _nmapElId='nm_'+Date.now();
   el.setAttribute('data-nmap-stamp', _nmapElId);
 
-  const center=gps
-    ? new naver.maps.LatLng(gps.lat,gps.lng)
-    : new naver.maps.LatLng(37.5665,126.9780);
+  const center = gps
+    ? new naver.maps.LatLng(gps.lat, gps.lng)
+    : new naver.maps.LatLng(37.5665, 126.9780);
 
-  _nmap=new naver.maps.Map(el,{
-    center, zoom:15,
-    mapTypeControl:false,
-    zoomControl:true,
-    zoomControlOptions:{ position:naver.maps.Position.TOP_RIGHT },
-    scaleControl:false,
-    logoControl:true,
-    mapDataControl:false,
+  _nmap = new naver.maps.Map(el, {
+    center, zoom: 14,
+    mapTypeControl: false,
+    zoomControl: true,
+    zoomControlOptions: { position: naver.maps.Position.TOP_RIGHT },
+    scaleControl: false,
+    logoControl: true,
+    mapDataControl: false,
+  });
+
+  // 지도 클릭 시 열린 InfoWindow 닫기
+  naver.maps.Event.addListener(_nmap, 'click', ()=>{
+    if(_openIw){ _openIw.close(); _openIw=null; }
   });
 
   if(gps) _addGpsMarker();
   placeMapMarkers();
 }
 
-// 현재위치 마커 — 별도 변수로 관리해 재사용
-let _gpsMarker=null;
+// ── 현재위치 마커 ──────────────────────────────────────────
 function _addGpsMarker(){
   if(!_nmap||!gps) return;
-  _gpsMarker=new naver.maps.Marker({
-    position:new naver.maps.LatLng(gps.lat,gps.lng),
-    map:_nmap,
-    icon:{
-      content:`<div style="width:16px;height:16px;border-radius:50%;background:#3B9EFF;border:3px solid #fff;box-shadow:0 2px 8px rgba(59,158,255,.7)"></div>`,
-      anchor:new naver.maps.Point(8,8),
+  _gpsMarker = new naver.maps.Marker({
+    position: new naver.maps.LatLng(gps.lat, gps.lng),
+    map: _nmap,
+    icon: {
+      content: `<div style="width:18px;height:18px;border-radius:50%;background:#3B9EFF;border:3px solid #fff;box-shadow:0 0 0 3px rgba(59,158,255,.3),0 2px 8px rgba(0,0,0,.4)"></div>`,
+      anchor: new naver.maps.Point(9, 9),
     },
-    title:'현재 위치',
-    zIndex:999,
+    title: '현재 위치',
+    zIndex: 9999,
   });
 }
 
-// ── 마커 커스텀 HTML 생성 (이름 라벨 포함) ───────────────────
-function _makeMarkerEl(label, color){
-  const short=label.length>16?label.slice(0,15)+'…':label;
-  return `<div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;pointer-events:auto">
-    <div style="width:15px;height:15px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.6);flex-shrink:0"></div>
-    <div style="margin-top:4px;background:#fff;color:#111;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;white-space:nowrap;font-family:'Noto Sans KR',sans-serif;border:1.5px solid ${color};box-shadow:0 1px 5px rgba(0,0,0,.35);pointer-events:none;letter-spacing:-.02em">${short}</div>
+// ── 마커 HTML: 은행명(소) + 지점명(대) + 관리상태 뱃지 ────────
+function _makeMarkerEl(c, color, u){
+  const company = c.companyName.length>8 ? c.companyName.slice(0,7)+'…' : c.companyName;
+  const branch  = c.branchName
+    ? (c.branchName.length>10 ? c.branchName.slice(0,9)+'…' : c.branchName)
+    : '';
+  const statusBg   = u.cls==='u-r'?'#E05252':u.cls==='u-o'?'#E8923A':u.cls==='u-y'?'#E8C53A':'#2ECC71';
+  const statusIcon = u.cls==='u-r'?'🔴':u.cls==='u-o'?'🟠':u.cls==='u-y'?'🟡':'🟢';
+  return `<div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;pointer-events:auto;transform:translateX(-50%)">
+    <div style="width:12px;height:12px;border-radius:50%;background:${color};border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.5);flex-shrink:0"></div>
+    <div style="margin-top:3px;background:#fff;border:2px solid ${color};border-radius:7px;padding:3px 8px;box-shadow:0 2px 10px rgba(0,0,0,.22);pointer-events:none;min-width:56px;text-align:center">
+      ${branch
+        ? `<div style="font-size:9px;color:#888;font-weight:600;font-family:'Noto Sans KR',sans-serif;line-height:1.2;letter-spacing:-.02em">${company}</div>
+           <div style="font-size:11px;color:#111;font-weight:800;font-family:'Noto Sans KR',sans-serif;line-height:1.3;white-space:nowrap">${branch}</div>`
+        : `<div style="font-size:11px;color:#111;font-weight:800;font-family:'Noto Sans KR',sans-serif;line-height:1.4;white-space:nowrap">${company}</div>`}
+      <div style="font-size:9px;font-weight:700;color:${statusBg};line-height:1.3;font-family:'Noto Sans KR',sans-serif">${statusIcon} ${u.lbl}${u.pct<999?' '+u.dd:''}</div>
+    </div>
   </div>`;
 }
 
-// ── InfoWindow 공통 HTML 생성 ─────────────────────────────────
+// ── InfoWindow HTML ───────────────────────────────────────
 function _makeIwContent(c, color, u){
-  const fullName=c.companyName+(c.branchName?' '+c.branchName:'');
-  return `<div style="font-family:'Noto Sans KR',sans-serif;padding:10px 12px;min-width:170px;max-width:230px;background:#fff;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.15)">
-    <div style="font-size:14px;font-weight:900;color:#0a0a0a;line-height:1.35;margin-bottom:4px;word-break:keep-all">${fullName}</div>
-    <div style="font-size:11px;font-weight:600;color:#666;margin-bottom:4px">${c.category}</div>
-    <div style="display:inline-block;font-size:11px;font-weight:800;color:${color};background:${color}1a;padding:2px 8px;border-radius:12px;margin-bottom:6px">${u.dd} · ${u.lbl}</div>
-    ${c.contactName?`<div style="font-size:11px;font-weight:600;color:#444;margin-bottom:6px">👤 ${c.contactName}</div>`:''}
-    <a href="#" onclick="event.preventDefault();go('detail','${c.id}')" style="display:block;text-align:center;font-size:12px;font-weight:700;color:#fff;background:#3B9EFF;padding:5px 0;border-radius:6px;text-decoration:none">상세 보기 →</a>
+  const fullName = c.companyName+(c.branchName?' '+c.branchName:'');
+  const statusDot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:4px;vertical-align:middle"></span>`;
+  return `<div style="font-family:'Noto Sans KR',sans-serif;padding:12px 14px;min-width:180px;max-width:240px;background:#fff;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.18)">
+    <div style="font-size:9px;font-weight:600;color:#888;letter-spacing:.04em;margin-bottom:2px;text-transform:uppercase">${c.category}</div>
+    <div style="font-size:15px;font-weight:900;color:#0a0a0a;line-height:1.3;margin-bottom:6px;word-break:keep-all">${fullName}</div>
+    <div style="display:flex;align-items:center;margin-bottom:8px">
+      ${statusDot}
+      <span style="font-size:12px;font-weight:800;color:${color}">${u.lbl}</span>
+      <span style="font-size:11px;color:#888;margin-left:5px">${u.dd}</span>
+    </div>
+    ${c.contactName?`<div style="font-size:11.5px;font-weight:600;color:#444;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #f0f0f0">👤 ${c.contactName}${c.contactPhone?' · '+c.contactPhone:''}</div>`:''}
+    <a href="#" onclick="event.preventDefault();go('detail','${c.id}')" style="display:block;text-align:center;font-size:12.5px;font-weight:700;color:#fff;background:#3B9EFF;padding:6px 0;border-radius:7px;text-decoration:none;letter-spacing:-.01em">상세 보기 →</a>
   </div>`;
 }
 
@@ -787,51 +812,60 @@ function _refreshNearby(){
   const listEl=document.getElementById('nearby-list');
   const lblEl=document.getElementById('nearby-label');
   if(!listEl||!lblEl||!gps) return;
-  const nearby=S.clients.filter(c=>c.lat&&c.lng&&hav(gps.lat,gps.lng,c.lat,c.lng)<=mapRadius)
-    .map(c=>({...c,dist:hav(gps.lat,gps.lng,c.lat,c.lng),u:getU(c)})).sort((a,b)=>a.dist-b.dist);
+  const nearby=S.clients
+    .filter(c=>c.lat&&c.lng&&hav(gps.lat,gps.lng,c.lat,c.lng)<=mapRadius)
+    .map(c=>({...c,dist:hav(gps.lat,gps.lng,c.lat,c.lng),u:getU(c)}))
+    .sort((a,b)=>a.dist-b.dist);
   lblEl.textContent=`근처 거래처 (${nearby.length}곳 / 반경 ${mapRadius}m)`;
-  listEl.innerHTML=nearby.map(c=>`
-    <div class="card cc ${c.u.cls}" onclick="go('detail','${c.id}')">
-      <div class="cs"></div>
-      <div class="cb"><div class="cn">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
-        <div class="cm">${c.dist}m · ${c.u.dd}</div></div>
-      <button class="btn bp bsm" onclick="event.stopPropagation();go('visit','${c.id}')">방문</button>
-    </div>`).join('')||`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">주변에 좌표가 등록된 거래처가 없습니다</div>`;
+  listEl.innerHTML = nearby.length
+    ? nearby.map(c=>`
+      <div class="card cc ${c.u.cls}" onclick="go('detail','${c.id}')">
+        <div class="cs"></div>
+        <div class="cb">
+          <div class="cn">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
+          <div class="cm">${c.dist}m · ${c.u.lbl} ${c.u.dd}</div>
+        </div>
+        <button class="btn bp bsm" onclick="event.stopPropagation();go('visit','${c.id}')">방문</button>
+      </div>`).join('')
+    : `<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">주변에 좌표가 등록된 거래처가 없습니다</div>`;
 }
 
+// ── 지도 위 마커 전체 갱신 ──────────────────────────────────
 function placeMapMarkers(){
-  if(!_nmap||!window.naver?.maps)return;
-  _nmarkers.forEach(m=>m.setMap(null));
+  if(!_nmap||!window.naver?.maps) return;
+  // 기존 마커 제거
+  _nmarkers.forEach(m=>{ try{m.setMap(null);}catch{} });
   _nmarkers=[];
+  if(_openIw){ try{_openIw.close();}catch{} _openIw=null; }
 
   S.clients.filter(c=>c.lat&&c.lng).forEach(c=>{
-    const u=getU(c);
-    const color=u.cls==='u-r'?'#E05252':u.cls==='u-o'?'#E8923A':u.cls==='u-y'?'#F0C040':'#2ECC71';
-    const fullName=c.companyName+(c.branchName?' '+c.branchName:'');
+    const u = getU(c);
+    const color = u.cls==='u-r'?'#E05252':u.cls==='u-o'?'#E8923A':u.cls==='u-y'?'#F0C040':'#2ECC71';
 
-    const m=new naver.maps.Marker({
-      position:new naver.maps.LatLng(c.lat,c.lng),
-      map:_nmap,
-      icon:{
-        content:_makeMarkerEl(fullName,color),
-        anchor:new naver.maps.Point(7,7),
+    const m = new naver.maps.Marker({
+      position: new naver.maps.LatLng(c.lat, c.lng),
+      map: _nmap,
+      icon: {
+        content: _makeMarkerEl(c, color, u),
+        // anchor 는 마커 HTML의 transform:translateX(-50%) 로 수평 중앙 처리
+        anchor: new naver.maps.Point(0, 12),
       },
-      title:fullName,
-      zIndex:u.cls==='u-r'?3:u.cls==='u-o'?2:1,
+      title: c.companyName+(c.branchName?' '+c.branchName:''),
+      zIndex: u.cls==='u-r'?30:u.cls==='u-o'?20:u.cls==='u-y'?10:5,
     });
 
-    const iw=new naver.maps.InfoWindow({
-      content:_makeIwContent(c,color,u),
-      borderWidth:0,
-      backgroundColor:'transparent',
-      disableAnchor:true,
-      pixelOffset:new naver.maps.Point(0,-10),
+    const iw = new naver.maps.InfoWindow({
+      content: _makeIwContent(c, color, u),
+      borderWidth: 0,
+      backgroundColor: 'transparent',
+      disableAnchor: true,
+      pixelOffset: new naver.maps.Point(0, -8),
     });
 
-    naver.maps.Event.addListener(m,'click',()=>{
-      // 열려있으면 닫고, 닫혀있으면 열기
-      if(iw.getMap()) iw.close();
-      else iw.open(_nmap,m);
+    naver.maps.Event.addListener(m, 'click', ()=>{
+      if(_openIw && _openIw !== iw){ _openIw.close(); }
+      if(iw.getMap()){ iw.close(); _openIw=null; }
+      else { iw.open(_nmap, m); _openIw=iw; }
     });
     _nmarkers.push(m);
   });
@@ -846,10 +880,7 @@ function initDetailMap(c){
       zoom:17,
       mapTypeControl:false,
       zoomControl:true,
-      zoomControlOptions:{
-        position:naver.maps.Position.TOP_RIGHT,
-        style:naver.maps.ZoomControlStyle.SMALL,
-      },
+      zoomControlOptions:{ position:naver.maps.Position.TOP_RIGHT },
       scaleControl:false,
       logoControl:true,
       mapDataControl:false,
@@ -1058,51 +1089,55 @@ function _isConfidentMatch(c, resultName){
 }
 
 // ── 거래처명으로 Naver Maps Service Geocode 검색 ───────────
+// naver.maps.Service.geocode 는 주소/건물명 모두 지원
+// 금융기관 특성: "위치키+기관명" 합성명 패턴 우선 시도
 async function searchClientByName(id){
   const c=S.clients.find(x=>x.id===id);
   if(!c) return;
-  if(!window.naver?.maps){
-    toast('네이버 지도 API가 설정되어 있지 않습니다'); return;
+  if(!window.naver?.maps?.Service){
+    // geocoder 서브모듈이 아직 안 로드됐을 수 있음
+    toast('지도 API 초기화 중 — 잠시 후 다시 시도하세요'); return;
   }
 
   const fullName=(c.companyName+(c.branchName?' '+c.branchName:'')).trim();
   toast(`"${fullName}" 위치 검색 중...`);
 
-  // ── 쿼리 목록: 가장 구체적인 형태부터 ──────────────────────
-  // 한국 금융기관명은 "위치키+회사명" 합성 형태로 등록된 경우 많음
-  // 예) "금호새마을금고" (회사="새마을금고", 지점="금호본점")
+  // ── 쿼리 목록: 구체적인 것부터 폴백 순서 ─────────────────
   const queries=[];
   if(c.branchName){
-    const locKey=c.branchName.replace(/(지점|본점|지소|출장소|영업점|센터|점)$/,'').trim();
+    // 접미사 제거해 위치 키워드 추출 (예: "서린동지점"→"서린동", "금호본점"→"금호")
+    const locKey=c.branchName
+      .replace(/(지점|본점|지소|출장소|영업점|센터|지소장|점|지점장)$/,'').trim();
+    // 패턴 1: "금호새마을금고" (위치키+기관명 합성 — 단위조합 계열 자주 사용)
     if(locKey&&locKey!==c.branchName) queries.push(locKey+c.companyName);
+    // 패턴 2: "국민은행 서린동지점" (공백 포함 전체명)
     queries.push(`${c.companyName} ${c.branchName}`);
-    queries.push(`${c.branchName} ${c.companyName}`);
-  }else{
-    queries.push(c.companyName);
+    // 패턴 3: "서린동 국민은행" (지점명 앞)
+    if(locKey) queries.push(`${locKey} ${c.companyName}`);
+    // 패턴 4: 지점명만 (주소 내 건물명으로 검색되는 경우)
+    queries.push(c.branchName);
   }
+  if(c.address) queries.push(c.address);           // 주소가 있으면 후순위로 추가
+  if(!queries.length) queries.push(c.companyName); // 기관명만으로 폴백
 
-  // 결과 처리 공통 함수
-  const tryApply=(addr,lat,lng,queryUsed)=>{
+  // 결과 처리
+  const tryApply=(addr,lat,lng,q)=>{
     if(!isInKorea(lat,lng)){
-      console.warn(`[NaverGeo] 한국 외 좌표 거부: (${lat},${lng})`);
+      console.warn(`[NaverGeo] 한국 외 좌표 거부: (${lat},${lng}) q="${q}"`);
       return false;
     }
     set({clients:S.clients.map(x=>x.id===id?{...x,address:addr||x.address,lat,lng}:x)});
-    toast(`✓ 위치 등록: ${queryUsed}`);
+    toast(`✓ 위치 등록: ${c.companyName}${c.branchName?' '+c.branchName:''}`);
     if(page==='map'&&_nmap) placeMapMarkers();
     return true;
   };
 
-  // ── naver.maps.Service.geocode 순차 시도 ─────────────────
   for(const q of queries){
-    const result=await new Promise(resolve=>{
+    const result = await new Promise(resolve=>{
       naver.maps.Service.geocode({query:q},(status,response)=>{
-        if(status===naver.maps.Service.Status.OK&&response.v2?.addresses?.length){
+        if(status===naver.maps.Service.Status.OK&&response.v2?.addresses?.length)
           resolve(response.v2.addresses[0]);
-        }else{
-          console.warn(`[NaverGeo] "${q}" → ${status}`);
-          resolve(null);
-        }
+        else{ console.warn(`[NaverGeo] "${q}" → ${status}`); resolve(null); }
       });
     });
     if(result){
@@ -1110,8 +1145,9 @@ async function searchClientByName(id){
       const addr=result.roadAddress||result.jibunAddress||'';
       if(tryApply(addr,lat,lng,q)) return;
     }
+    await new Promise(r=>setTimeout(r,80)); // geocoder rate-limit 방지
   }
-  toast('⚠ 위치를 특정할 수 없습니다 — 주소를 직접 입력 후 재검색하세요');
+  toast('⚠ 위치를 찾을 수 없습니다 — 거래처 상세에서 주소를 직접 입력 후 재시도하세요');
 }
 
 // ── 주소 기반 Geocoding (주소가 있을 때 우선 사용) ────────────
@@ -1715,56 +1751,125 @@ async function saveVisit(cid){
 }
 
 /* ── MAP ── */
+// 지도 하단 탭: 'nearby'(근처) | 'bank'(은행별)
+let mapTab='nearby';
+
 function PageMap(){
-  const nearby=gps?S.clients.filter(c=>c.lat&&c.lng&&hav(gps.lat,gps.lng,c.lat,c.lng)<=mapRadius)
-    .map(c=>({...c,dist:hav(gps.lat,gps.lng,c.lat,c.lng),u:getU(c)})).sort((a,b)=>a.dist-b.dist):[];
-  const noCoord=S.clients.filter(c=>!c.lat);
+  const withCoord = S.clients.filter(c=>c.lat&&c.lng);
+  const noCoord   = S.clients.filter(c=>!c.lat);
+
+  // ── 근처 거래처 (GPS 기반) ───────────────────────────────
+  const nearby = gps
+    ? withCoord
+        .map(c=>({...c,dist:hav(gps.lat,gps.lng,c.lat,c.lng),u:getU(c)}))
+        .filter(c=>c.dist<=mapRadius)
+        .sort((a,b)=>a.dist-b.dist)
+    : [];
+
+  // ── 은행별 그룹 목록 (companyName → branchName 정렬) ─────
+  const bankGroups = {};
+  withCoord
+    .map(c=>({...c,u:getU(c)}))
+    .sort((a,b)=>{
+      const cmp = a.companyName.localeCompare(b.companyName,'ko');
+      if(cmp!==0) return cmp;
+      return (a.branchName||'').localeCompare(b.branchName||'','ko');
+    })
+    .forEach(c=>{
+      const key = c.companyName;
+      if(!bankGroups[key]) bankGroups[key]=[];
+      bankGroups[key].push(c);
+    });
+
+  // 탭 내용 ──────────────────────────────────────────────
+  const tabNearby = `
+    <div id="nearby-label" class="slbl">근처 거래처 ${gps?`(${nearby.length}곳 / 반경 ${mapRadius}m)`:''}</div>
+    <div id="nearby-list">
+    ${!gps?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">📍 위치 인식 버튼을 눌러주세요</div>`:''}
+    ${gps&&!nearby.length?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">주변 ${mapRadius}m 내 거래처가 없습니다</div>`:''}
+    ${nearby.map(c=>`
+      <div class="card cc ${c.u.cls}" onclick="go('detail','${c.id}')">
+        <div class="cs"></div>
+        <div class="cb">
+          <div class="cn">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
+          <div class="cm">${c.dist}m · ${c.u.lbl} ${c.u.dd}</div>
+        </div>
+        <button class="btn bp bsm" onclick="event.stopPropagation();go('visit','${c.id}')">방문</button>
+      </div>`).join('')}
+    </div>`;
+
+  const urgIcon = cls => cls==='u-r'?'🔴':cls==='u-o'?'🟠':cls==='u-y'?'🟡':'🟢';
+
+  const tabBank = Object.keys(bankGroups).length===0
+    ? `<div style="text-align:center;padding:28px;font-size:12px;color:var(--tx3)">좌표가 등록된 거래처가 없습니다<br><span style="font-size:11px">거래처 상세에서 좌표 검색 또는 설정 → 일괄 좌표 검색</span></div>`
+    : Object.entries(bankGroups).map(([bank, list])=>{
+        // 가장 위험한 상태로 그룹 뱃지 색상 결정
+        const worst = list.reduce((a,c)=>c.u.pct>a.u.pct?c:a, list[0]);
+        const wColor = worst.u.cls==='u-r'?'var(--red)':worst.u.cls==='u-o'?'var(--or)':worst.u.cls==='u-y'?'var(--yw)':'var(--gn)';
+        return `
+      <div style="margin:0 14px 2px">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 2px 4px">
+          <div style="font-size:13px;font-weight:700;color:var(--tx);flex:1">${bank}</div>
+          <div style="font-size:10px;font-weight:700;color:${wColor};background:rgba(0,0,0,.08);padding:2px 8px;border-radius:10px">${list.length}곳</div>
+        </div>
+        ${list.map(c=>`
+        <div class="card cc ${c.u.cls}" style="margin:0 0 6px" onclick="go('detail','${c.id}')">
+          <div class="cs"></div>
+          <div class="cb">
+            <div class="cn">${c.branchName||c.companyName}</div>
+            <div class="cm">${c.address||'주소 미등록'}</div>
+          </div>
+          <div class="cr">
+            <div class="dd">${c.u.lbl}</div>
+            <div style="font-size:10px;color:var(--tx3);font-family:var(--mo)">${c.u.dd}</div>
+          </div>
+        </div>`).join('')}
+      </div>`;
+      }).join('');
+
   return`
   <div class="hdr">
     <div class="hdr-row">
-      <div><div class="hdr-t">지도</div><div class="hdr-s">네이버 지도 · 거래처 현황</div></div>
+      <div><div class="hdr-t">지도</div><div class="hdr-s">네이버 지도 · ${withCoord.length}곳 표시</div></div>
       <button class="btn bs bsm" onclick="reqGPS()" style="min-width:80px">
         ${gpsLoading?'<div class="spin"></div>':'📍 위치 인식'}</button>
     </div>
   </div>
   <div class="page">
-    ${gps?`<div class="gpb"><div class="gpd"></div><span>${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E${gps.accuracy?` · 정확도 ±${gps.accuracy}m`:''}</span></div>`:''}
+    ${gps?`<div class="gpb"><div class="gpd"></div><span>${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E${gps.accuracy?` · ±${gps.accuracy}m`:''}</span></div>`:''}
     ${CFG.mapsKey?'':'<div style="padding:8px 14px;font-size:11px;color:var(--tx3);background:var(--rbg);border-bottom:1px solid var(--bd)">⚠ 네이버 지도 Client ID 미설정 — 설정에서 입력하면 지도가 표시됩니다</div>'}
     <div id="gmap" style="display:${CFG.mapsKey?'block':'none'}"></div>
 
-    <div class="card" style="margin-top:0;margin-bottom:10px">
-      <div class="il">표시 반경</div>
-      <div class="row g2">
-        <input type="range" min="100" max="3000" step="100" value="${mapRadius}"
-          oninput="mapRadius=parseInt(this.value);document.getElementById('map-radius-val').textContent=mapRadius+'m';_refreshNearby()"
-          onchange="render()" style="flex:1">
-        <span id="map-radius-val" style="font-family:var(--mo);font-size:13px;min-width:55px;text-align:right;color:var(--ac)">${mapRadius}m</span>
+    ${CFG.mapsKey?`
+    <div class="card" style="margin-top:0;margin-bottom:8px;padding:10px 14px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:11.5px;color:var(--tx2);flex-shrink:0">표시 반경</span>
+        <input type="range" min="100" max="5000" step="100" value="${mapRadius}"
+          oninput="mapRadius=parseInt(this.value);document.getElementById('map-rv').textContent=mapRadius+'m';_refreshNearby()"
+          onchange="render()" style="flex:1;accent-color:var(--ac)">
+        <span id="map-rv" style="font-family:var(--mo);font-size:12px;min-width:46px;text-align:right;color:var(--ac)">${mapRadius}m</span>
       </div>
+    </div>`:''}
+
+    <div class="chips" style="padding:4px 14px 8px">
+      <div class="chip ${mapTab==='nearby'?'on':''}" onclick="mapTab='nearby';render()">📍 근처 거래처</div>
+      <div class="chip ${mapTab==='bank'?'on':''}" onclick="mapTab='bank';render()">🏦 은행별 조회</div>
     </div>
 
-    <div id="nearby-label" class="slbl">근처 거래처 ${gps?`(${nearby.length}곳 / 반경 ${mapRadius}m)`:''}</div>
-    <div id="nearby-list">
-    ${!gps?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">📍 위치 인식 버튼을 눌러주세요</div>`:''}
-    ${gps&&!nearby.length?`<div style="text-align:center;padding:18px;font-size:12px;color:var(--tx3)">주변에 좌표가 등록된 거래처가 없습니다</div>`:''}
-    ${nearby.map(c=>`
-    <div class="card cc ${c.u.cls}" onclick="go('detail','${c.id}')">
-      <div class="cs"></div>
-      <div class="cb"><div class="cn">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
-        <div class="cm">${c.dist}m · ${c.u.dd}</div></div>
-      <button class="btn bp bsm" onclick="event.stopPropagation();go('visit','${c.id}')">방문</button>
-    </div>`).join('')}
-    </div>
+    ${mapTab==='nearby' ? tabNearby : tabBank}
 
     ${noCoord.length?`
-    <div class="slbl">좌표 미등록 거래처 (${noCoord.length}곳)</div>
-    ${noCoord.slice(0,6).map(c=>`
-    <div class="card row jb" style="padding:10px 14px">
-      <div style="font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
-      <button class="btn bs bsm" style="margin-left:8px;flex-shrink:0" onclick="geocodeClient('${c.id}')">좌표 검색</button>
-    </div>`).join('')}
-    ${noCoord.length>6?`<div style="text-align:center;padding:8px;font-size:11px;color:var(--tx3)">${noCoord.length-6}개 더 있음</div>`:''}
-    <div style="padding:0 14px 10px">
-      <button class="btn bs bsm" style="width:auto" onclick="doBatchGeo()">전체 일괄 좌표 검색</button>
+    <div style="margin:8px 14px 0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0 4px">
+        <span style="font-size:10.5px;font-weight:700;color:var(--tx3);letter-spacing:.05em">좌표 미등록 (${noCoord.length}곳)</span>
+        <button class="btn bs bsm" onclick="doBatchGeo()">일괄 좌표 검색</button>
+      </div>
+      ${noCoord.slice(0,5).map(c=>`
+      <div class="card row jb" style="padding:9px 12px;margin-bottom:6px">
+        <div style="font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:var(--tx2)">${c.companyName}${c.branchName?' '+c.branchName:''}</div>
+        <button class="btn bs bsm" style="margin-left:8px;flex-shrink:0" onclick="geocodeClient('${c.id}')">좌표 검색</button>
+      </div>`).join('')}
+      ${noCoord.length>5?`<div style="text-align:center;padding:6px 0 10px;font-size:11px;color:var(--tx3)">외 ${noCoord.length-5}곳</div>`:''}
     </div>`:''}
   </div>`;
 }
