@@ -11,7 +11,6 @@
 <meta name="apple-mobile-web-app-title" content="VisitLog">
 <link rel="manifest" href="data:application/json,%7B%22name%22%3A%22VisitLog%20%ED%95%98%EB%82%98%EA%B0%90%EC%A0%95%22%2C%22short_name%22%3A%22VisitLog%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230D1B2A%22%2C%22theme_color%22%3A%22%230D1B2A%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%2520xmlns%3D%2527http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%2527%2520viewBox%3D%25270%25200%252048%252048%2527%253E%253Crect%2520width%3D%252748%2527%2520height%3D%252748%2527%2520rx%3D%252712%2527%2520fill%3D%2527%25230D1B2A%2527%2F%253E%253Ccircle%2520cx%3D%252724%2527%2520cy%3D%252720%2527%2520r%3D%25276%2527%2520fill%3D%2527%25233B9EFF%2527%2F%253E%253Cpath%2520d%3D%252712%252032c0-6%25204-10%252010-10h4c6%25200%252010%25204%252010%252010%2527%2520fill%3D%2527%25233B9EFF%2527%2F%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22192x192%22%7D%5D%7D">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <style>
@@ -195,48 +194,12 @@ select option{background:var(--bg3)}
 // ═══════════════════════════════════════════════
 // 0. CONFIG
 // ═══════════════════════════════════════════════
-const GEMINI_MODEL = 'gemini-2.0-flash';
-// Gemini 키는 관리자 설정(CFG.geminiKey)으로 관리 — 하드코딩 금지
-const GEMINI_KEY_FALLBACK = ''; // 비워둠: 설정 화면에서 직접 입력
+// Gemini 기본 모델 — CFG.geminiModel 설정값으로 오버라이드 가능
+const GEMINI_MODEL_DEFAULT = 'gemini-2.5-pro';
+// Gemini 키/모델은 관리자 설정(CFG.geminiKey / CFG.geminiModel)으로 관리 — 하드코딩 금지
 const STORAGE_PREFIX = 'vl_hana_v5_user_';  // 사용자별 데이터 분리
 const STORAGE_LEGACY = 'vl_hana_v4';         // 마이그레이션용
 const CFG_KEY      = 'vl_hana_cfg';          // 전역 설정 (관리자가 설정, 모두 공유)
-
-// ── Tesseract.js 워커 (명함 OCR용, 지연 초기화) ──────────────
-let _tessWorker  = null;   // 생성된 워커 인스턴스
-let _tessReady   = false;  // 초기화 완료 여부
-let _tessLoading = false;  // 초기화 진행 중 여부
-
-async function initTesseract(onProgress){
-  if(_tessReady) return _tessWorker;
-  // 이미 초기화 중이면 완료될 때까지 대기
-  if(_tessLoading){
-    return new Promise(resolve=>{
-      const poll=setInterval(()=>{if(_tessReady){clearInterval(poll);resolve(_tessWorker);}},250);
-    });
-  }
-  _tessLoading=true;
-  onProgress&&onProgress('한국어 OCR 엔진 준비 중... (최초 1회)');
-  try{
-    _tessWorker=await Tesseract.createWorker(['kor','eng'],1,{
-      logger:m=>{
-        if(m.status==='loading language traineddata'){
-          const pct=Math.round((m.progress||0)*100);
-          onProgress&&onProgress(`언어 팩 로딩 중... ${pct}%`);
-        } else if(m.status==='initializing tesseract'){
-          onProgress&&onProgress('OCR 엔진 초기화 중...');
-        }
-      }
-    });
-    _tessReady=true;
-    console.log('[Tesseract] 한국어 OCR 워커 준비 완료');
-  }catch(e){
-    _tessLoading=false;
-    throw new Error('OCR 엔진 초기화 실패: '+e.message);
-  }
-  _tessLoading=false;
-  return _tessWorker;
-}
 
 const CATEGORIES = ['제1금융권','제2금융권/단위조합','공공기관/특수기관','일반기업','증권사/보험사'];
 const DEF_CYCLES = {'제1금융권':30,'제2금융권/단위조합':60,'공공기관/특수기관':90,'일반기업':45,'증권사/보험사':30};
@@ -265,6 +228,7 @@ let CFG = {
   gasUrl:      _cfg.gasUrl      || '',  // GAS Web App URL (백엔드)
   mapsKey:     _cfg.mapsKey     || '',
   geminiKey:   _cfg.geminiKey   || '',  // Gemini API 키 (관리자 설정)
+  geminiModel: _cfg.geminiModel || GEMINI_MODEL_DEFAULT,  // Gemini 모델 (관리자 설정)
   adminPwHash: _cfg.adminPwHash || '',
   // 팀원 관리 (관리자가 추가/승인)
 };
@@ -493,21 +457,85 @@ function parseRows(rows){
 // ═══════════════════════════════════════════════
 // 3. GEMINI API
 // ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// Claude AI — 명함 OCR
+// 라우팅 전략:
+//   1순위: GAS 프록시 (Netlify/GitHub Pages 배포 환경 — CORS 우회)
+//   2순위: Gemini Vision (GAS 없을 때, Gemini 키 설정된 경우)
+// ═══════════════════════════════════════════════
+const ClaudeAI = {
+  async card(b64, onProgress) {
+    // ── 1순위: GAS 프록시를 통한 Claude API 호출 ──
+    if (CFG.gasUrl) {
+      try {
+        onProgress && onProgress('Claude Vision 분석 중...');
+        const res = await fetch(CFG.gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            action: 'ocrCard',
+            user: S.user?.name || '',
+            imageB64: b64
+          })
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.ok && json.data) {
+            // GAS는 { parsed: {...}, engine: 'claude'|'gemini' } 형태로 반환
+            const raw = json.data.parsed || json.data;
+            const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (p && p.companyName !== undefined) {
+              const engine = json.data.engine || 'GAS';
+              onProgress && onProgress(engine + ' 인식 완료');
+              return {
+                companyName:  p.companyName  || '',
+                branchName:   p.branchName   || '',
+                contactName:  p.contactName  || '',
+                contactTitle: p.contactTitle || '',
+                contactPhone: p.phone        || p.contactPhone || '',
+                fax:          p.fax          || '',
+                email:        p.email        || '',
+                address:      p.address      || '',
+              };
+            }
+          }
+        }
+        // GAS 오류 시 Gemini로 폴백
+        console.warn('GAS OCR 실패 — Gemini로 폴백');
+      } catch(e) {
+        console.warn('GAS OCR fetch 오류:', e.message, '— Gemini로 폴백');
+      }
+    }
+
+    // ── 2순위: Gemini Vision 폴백 ──
+    if (CFG.geminiKey) {
+      return Gem.card(b64, (msg) => {
+        onProgress && onProgress('Gemini Vision 분석 중...');
+      });
+    }
+
+    throw new Error('OCR 서비스를 사용할 수 없습니다.\n\n' +
+      '해결 방법:\n' +
+      '• GAS 백엔드에 ocrCard 액션 추가 (권장)\n' +
+      '• 또는 설정에서 Gemini API 키 입력\n\n' +
+      '지금은 직접 입력을 사용해주세요.');
+  }
+};
+
 const Gem={
   async call(prompt,b64=null,mime='image/jpeg'){
     const parts=[];
     if(b64)parts.push({inlineData:{mimeType:mime,data:b64}});
     parts.push({text:prompt});
-    const gemKey=CFG.geminiKey||GEMINI_KEY_FALLBACK;
+    const gemKey=CFG.geminiKey;
     if(!gemKey)throw new Error('Gemini API 키가 설정되지 않았습니다.\n[설정 → Gemini API 키]에서 입력해주세요.');
-    // v1beta → v1 (엔터프라이즈 키 호환)
+    const model=CFG.geminiModel||GEMINI_MODEL_DEFAULT;
     const _callOnce = async () => fetch(
-      `https://generativelanguage.googleapis.com/v1/models/${GEMINI_MODEL}:generateContent?key=${gemKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemKey}`,
       {method:'POST',headers:{'Content-Type':'application/json'},
        body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.1,maxOutputTokens:1500}})}
     );
     let res = await _callOnce();
-    // 429 RPM 초과 시 자동 재시도 1회
     if(res.status===429){
       const e429=await res.json().catch(()=>({}));
       const msg429=e429?.error?.message||'';
@@ -530,123 +558,48 @@ const Gem={
     if(!txt)throw new Error('Gemini 응답 없음');
     return txt;
   },
-  // ── 명함 OCR: Tesseract.js(로컬) → Gemini 구조화 ─────────────
+  // ── 명함 OCR (Gemini Vision) — ClaudeAI 폴백용 ──────────────
   async card(b64, onProgress){
-    let extractedText = null;
-
-    // 1단계: Tesseract.js로 텍스트 추출 (브라우저 내장, API 호출 없음)
-    try{
-      const worker = await initTesseract(onProgress);
-      onProgress&&onProgress('명함 텍스트 인식 중...');
-      const { data:{ text, confidence } } = await worker.recognize(
-        'data:image/jpeg;base64,'+b64
-      );
-      const rawText = (text||'').trim();
-      console.log(`[Tesseract] 완료 — ${rawText.length}자, 신뢰도 ${Math.round(confidence||0)}%`);
-
-      // OCR 품질 검증: 쓰레기 출력이면 Gemini 이미지 방식으로 폴백
-      const korChars   = (rawText.match(/[가-힣]/g)||[]).length;
-      const garbageChars = (rawText.match(/[£$€¥#\[\]{}<>|\\^~`]/g)||[]).length;
-      const totalNonSpace = rawText.replace(/\s/g,'').length;
-      const korRatio = totalNonSpace>0 ? korChars/totalNonSpace : 0;
-      const isUsable = rawText.length>=10 && confidence>=45 && korRatio>=0.08 && garbageChars<=4;
-
-      if(isUsable){
-        extractedText = rawText;
-        console.log(`[Tesseract] 품질 OK — 한글비율 ${Math.round(korRatio*100)}%, 신뢰도 ${Math.round(confidence)}%`);
-      } else {
-        console.warn(`[Tesseract] 품질 불량 (한글비율 ${Math.round(korRatio*100)}%, 신뢰도 ${Math.round(confidence)}%, 쓰레기문자 ${garbageChars}개) → Gemini 이미지 방식으로 폴백`);
-      }
-    }catch(tErr){
-      console.warn('[Tesseract] 실패, Gemini 이미지 방식으로 폴백:', tErr.message);
-      extractedText = null;
-    }
-
-    // Tesseract가 텍스트를 뽑았으면 sc에 저장 (Gemini 실패해도 화면에 표시용)
-    if(extractedText) sc._ocrText = extractedText;
-
-    // 2단계: Gemini로 구조화
     const gemKey = CFG.geminiKey;
     if(!gemKey) throw new Error('Gemini API 키가 설정되지 않았습니다.\n[설정 → Gemini API 키]에서 입력해주세요.');
-
-    onProgress&&onProgress('Gemini로 명함 정보 정리 중...');
-
-    let gemParts;
-    if(extractedText){
-      // 텍스트만 전송 — 이미지 대비 토큰 수십분의 1 수준
-      onProgress&&onProgress('Gemini로 명함 정보 정리 중...');
-      gemParts = [{text:
-        `다음은 명함에서 추출한 텍스트다. 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.\n\n${extractedText}`
-      }];
-    }else{
-      // 폴백: 이미지 직접 전송 (Tesseract 품질 불량 또는 실패 시)
-      onProgress&&onProgress('Gemini Vision으로 명함 분석 중...');
-      gemParts = [
-        {inlineData:{mimeType:'image/jpeg',data:b64}},
-        {text:'이 명함 이미지에서 회사명, 지점명, 담당자 이름, 직책, 전화번호, 팩스번호, 이메일, 주소를 추출해서 JSON만 반환하라. 키: companyName, branchName, contactName, contactTitle, phone, fax, email, address. 값이 없으면 빈 문자열.'}
-      ];
-    }
-
-    // Gemini 호출 (429 시 retry-after 파싱 후 자동 1회 재시도)
-    const _callGemini = ()=>fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${gemKey}`,
-      {method:'POST', headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({contents:[{parts:gemParts}],generationConfig:{temperature:0.1,maxOutputTokens:600}})}
+    const model = CFG.geminiModel || GEMINI_MODEL_DEFAULT;
+    onProgress&&onProgress(`Gemini Vision (${model}) 분석 중...`);
+    const parts = [
+      {inlineData:{mimeType:'image/jpeg',data:b64}},
+      {text:`이 명함 이미지를 정밀하게 분석하여 다음 항목을 추출하라.
+반드시 JSON 객체만 반환하고, 마크다운 코드블록(\`\`\`)이나 설명 텍스트를 절대 포함하지 말 것.
+키: companyName(회사명), branchName(지점·부서명), contactName(담당자 이름), contactTitle(직책),
+phone(전화번호), fax(팩스번호), email(이메일), address(주소).
+값이 없으면 빈 문자열 "". 한국어 명함 우선.`}
+    ];
+    const _call = ()=>fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemKey}`,
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.1,maxOutputTokens:800}})}
     );
-
-    let gemRes = await _callGemini();
-
-    if(gemRes.status===429){
-      const e429 = await gemRes.json().catch(()=>({}));
-      const msg429 = e429?.error?.message||'';
-      const retryMatch = msg429.match(/retry(?:\s+after)?\s*([\d.]+)\s*s/i);
-      const waitSec = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : 30;
-
-      // 카운트다운 표시 후 자동 재시도
-      for(let t=waitSec; t>0; t--){
-        onProgress&&onProgress(`요청 한도 초과 — ${t}초 후 자동 재시도...`);
-        sc={...sc,progress:`요청 한도 초과 — ${t}초 후 자동 재시도...`};render();
-        await new Promise(r=>setTimeout(r,1000));
-      }
-      onProgress&&onProgress('Gemini 재시도 중...');
-      gemRes = await _callGemini();
+    let r = await _call();
+    if(r.status===429){
+      const e=await r.json().catch(()=>({}));
+      const m=e?.error?.message||'';
+      const sec=Math.ceil(parseFloat((m.match(/retry(?:\s+after)?\s*([\d.]+)\s*s/i)||[])[1]||30));
+      for(let t=sec;t>0;t--){onProgress&&onProgress(`요청 한도 초과 — ${t}초 후 재시도...`);await new Promise(r=>setTimeout(r,1000));}
+      r = await _call();
     }
-
-    if(!gemRes.ok){
-      const e = await gemRes.json().catch(()=>({}));
-      const msg = e?.error?.message||'';
-      if(gemRes.status===429||msg.includes('quota')||msg.includes('RESOURCE_EXHAUSTED')){
-        // Tesseract 텍스트라도 있으면 특수 에러로 구분
-        const ocrHint = extractedText
-          ? '【OCR 텍스트 인식 성공 — 아래 내용 참고해 직접 입력하세요】'
-          : '';
-        throw new Error('RATE_LIMIT'+ocrHint);
-      }
-      throw new Error('AI 인식 실패 ('+gemRes.status+'). 직접 입력해 주세요.');
+    if(!r.ok){
+      const e=await r.json().catch(()=>({}));
+      const msg=e?.error?.message||'';
+      throw new Error(msg||'Gemini OCR 실패 ('+r.status+')');
     }
-
-    const gemData = await gemRes.json();
-    const raw = gemData?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if(!raw) throw new Error('AI 응답이 없습니다. 다시 시도해주세요.');
-
-    // ```json 펜스 제거 후 파싱
-    const cleaned = raw.replace(/```json\n?|```\n?/g,'').trim();
+    const raw=( await r.json() )?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if(!raw) throw new Error('Gemini 응답 없음');
+    const cleaned=raw.replace(/```json\n?|```\n?/g,'').trim();
     try{
-      const jsonStr = cleaned.startsWith('{') ? cleaned : (cleaned.match(/\{[\s\S]*\}/)?.[0]||cleaned);
-      const p = JSON.parse(jsonStr);
-      return {
-        companyName:  p.companyName  || '',
-        branchName:   p.branchName   || '',
-        contactName:  p.contactName  || '',
-        contactTitle: p.contactTitle || '',
-        contactPhone: p.phone        || p.contactPhone || '',
-        fax:          p.fax          || '',
-        email:        p.email        || '',
-        address:      p.address      || '',
-      };
-    }catch{
-      throw new Error('AI 인식 실패. 직접 입력해 주세요.');
-    }
+      const jsonStr=cleaned.startsWith('{')?cleaned:(cleaned.match(/\{[\s\S]*\}/)?.[0]||cleaned);
+      const p=JSON.parse(jsonStr);
+      return {companyName:p.companyName||'',branchName:p.branchName||'',contactName:p.contactName||'',
+        contactTitle:p.contactTitle||'',contactPhone:p.phone||p.contactPhone||'',
+        fax:p.fax||'',email:p.email||'',address:p.address||''};
+    }catch{throw new Error('AI 인식 실패. 직접 입력해 주세요.');}
   },
   async geocode(addr){
     const raw=await this.call(`다음 주소의 위도와 경도를 JSON으로만 답하세요 (설명 없이, 숫자 정밀도 소수점 4자리):
@@ -723,83 +676,146 @@ const API = {
   async addMember(name)      { return this.call('addMember',    {name}); },
 };
 
-// 5. GOOGLE MAPS
+// 5. NAVER MAPS
 // ═══════════════════════════════════════════════
-let _gmap=null,_gmarkers=[],_gpsWatcher=null;
+let _nmap=null,_nmarkers=[],_gpsWatcher=null;
 
 function loadMapsScript(){
-  const key=CFG.mapsKey;
-  if(!key||document.getElementById('gmaps-script'))return;
+  const key=CFG.mapsKey; // 네이버 클라우드 플랫폼 Client ID
+  if(!key||document.getElementById('nmaps-script'))return;
   const s=document.createElement('script');
-  s.id='gmaps-script';
-  s.src=`https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&v=beta&callback=onMapsLoaded&language=ko&region=KR`;
-  s.async=true;s.defer=true;
+  s.id='nmaps-script';
+  // geocoder 서브모듈: 주소↔좌표 변환 (naver.maps.Service.geocode)
+  s.src=`https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${key}&submodules=geocoder&callback=onMapsLoaded`;
+  s.async=true;
   document.head.appendChild(s);
 }
 window.onMapsLoaded=()=>{ if(page==='map') initGMap(); };
 
 function initGMap(){
-  if(!window.google?.maps){
-    document.getElementById('gmap').innerHTML=`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--tx3);font-size:12px;flex-direction:column;gap:8px"><div class="spin"></div>지도 로딩 중...</div>`;
+  if(!window.naver?.maps){
+    const el=document.getElementById('gmap');
+    if(el) el.innerHTML=`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--tx3);font-size:12px;flex-direction:column;gap:8px"><div class="spin"></div>지도 로딩 중...</div>`;
     return;
   }
   const el=document.getElementById('gmap');if(!el)return;
-  const center=gps?{lat:gps.lat,lng:gps.lng}:{lat:37.5665,lng:126.9780};
-  _gmap=new google.maps.Map(el,{
-    center,zoom:15,
-    styles:[{elementType:'geometry',stylers:[{color:'#1d2c3f'}]},
-      {elementType:'labels.text.fill',stylers:[{color:'#8baabf'}]},
-      {elementType:'labels.text.stroke',stylers:[{color:'#1d2c3f'}]},
-      {featureType:'road',elementType:'geometry',stylers:[{color:'#243a52'}]},
-      {featureType:'water',elementType:'geometry',stylers:[{color:'#0d1b2a'}]},
-      {featureType:'poi',stylers:[{visibility:'off'}]}],
-    disableDefaultUI:false,zoomControl:true,mapTypeControl:false,streetViewControl:false,fullscreenControl:false,
+  const center=gps?new naver.maps.LatLng(gps.lat,gps.lng):new naver.maps.LatLng(37.5665,126.9780);
+
+  _nmap=new naver.maps.Map(el,{
+    center, zoom:15,
+    mapTypeControl:false,
+    zoomControl:true,
+    zoomControlOptions:{
+      position:naver.maps.Position.TOP_RIGHT,
+      style:naver.maps.ZoomControlStyle.SMALL,
+    },
+    scaleControl:false,
+    logoControl:true,
+    mapDataControl:false,
   });
+
   if(gps){
-    new google.maps.Marker({position:{lat:gps.lat,lng:gps.lng},map:_gmap,
-      icon:{path:google.maps.SymbolPath.CIRCLE,scale:8,fillColor:'#3B9EFF',fillOpacity:1,strokeColor:'#fff',strokeWeight:2},
-      title:'현재 위치'});
+    new naver.maps.Marker({
+      position:new naver.maps.LatLng(gps.lat,gps.lng),
+      map:_nmap,
+      icon:{
+        content:`<div style="width:16px;height:16px;border-radius:50%;background:#3B9EFF;border:3px solid #fff;box-shadow:0 2px 8px rgba(59,158,255,.7)"></div>`,
+        anchor:new naver.maps.Point(8,8),
+      },
+      title:'현재 위치',
+    });
   }
   placeMapMarkers();
 }
 
+// ── 마커 커스텀 HTML 생성 (이름 라벨 포함) ───────────────────
+function _makeMarkerEl(label, color){
+  const short=label.length>16?label.slice(0,15)+'…':label;
+  return `<div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;pointer-events:auto">
+    <div style="width:15px;height:15px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.6);flex-shrink:0"></div>
+    <div style="margin-top:4px;background:#fff;color:#111;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;white-space:nowrap;font-family:'Noto Sans KR',sans-serif;border:1.5px solid ${color};box-shadow:0 1px 5px rgba(0,0,0,.35);pointer-events:none;letter-spacing:-.02em">${short}</div>
+  </div>`;
+}
+
+// ── InfoWindow 공통 HTML 생성 ─────────────────────────────────
+function _makeIwContent(c, color, u){
+  const fullName=c.companyName+(c.branchName?' '+c.branchName:'');
+  return `<div style="font-family:'Noto Sans KR',sans-serif;padding:10px 12px;min-width:170px;max-width:230px;background:#fff;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.15)">
+    <div style="font-size:14px;font-weight:900;color:#0a0a0a;line-height:1.35;margin-bottom:4px;word-break:keep-all">${fullName}</div>
+    <div style="font-size:11px;font-weight:600;color:#666;margin-bottom:4px">${c.category}</div>
+    <div style="display:inline-block;font-size:11px;font-weight:800;color:${color};background:${color}1a;padding:2px 8px;border-radius:12px;margin-bottom:6px">${u.dd} · ${u.lbl}</div>
+    ${c.contactName?`<div style="font-size:11px;font-weight:600;color:#444;margin-bottom:6px">👤 ${c.contactName}</div>`:''}
+    <a href="#" onclick="event.preventDefault();go('detail','${c.id}')" style="display:block;text-align:center;font-size:12px;font-weight:700;color:#fff;background:#3B9EFF;padding:5px 0;border-radius:6px;text-decoration:none">상세 보기 →</a>
+  </div>`;
+}
+
 function placeMapMarkers(){
-  if(!_gmap||!window.google?.maps)return;
-  _gmarkers.forEach(m=>m.setMap(null));_gmarkers=[];
-  const iw=new google.maps.InfoWindow();
+  if(!_nmap||!window.naver?.maps)return;
+  _nmarkers.forEach(m=>m.setMap(null));
+  _nmarkers=[];
+
   S.clients.filter(c=>c.lat&&c.lng).forEach(c=>{
     const u=getU(c);
     const color=u.cls==='u-r'?'#E05252':u.cls==='u-o'?'#E8923A':u.cls==='u-y'?'#F0C040':'#2ECC71';
-    const m=new google.maps.Marker({
-      position:{lat:c.lat,lng:c.lng},map:_gmap,
-      icon:{path:google.maps.SymbolPath.CIRCLE,scale:9,fillColor:color,fillOpacity:.9,strokeColor:'#fff',strokeWeight:1.5},
-      title:c.companyName+(c.branchName?' '+c.branchName:''),
+    const fullName=c.companyName+(c.branchName?' '+c.branchName:'');
+
+    const m=new naver.maps.Marker({
+      position:new naver.maps.LatLng(c.lat,c.lng),
+      map:_nmap,
+      icon:{
+        content:_makeMarkerEl(fullName,color),
+        anchor:new naver.maps.Point(7,7),
+      },
+      title:fullName,
+      zIndex:u.cls==='u-r'?3:u.cls==='u-o'?2:1,
     });
-    m.addListener('click',()=>{
-      iw.setContent(`<div style="font-family:'Noto Sans KR',sans-serif;font-size:13px;min-width:140px">
-        <b>${c.companyName}${c.branchName?' '+c.branchName:''}</b><br>
-        <span style="color:#666">${c.category}</span><br>
-        <span style="color:${color};font-weight:700">${u.dd} · ${u.lbl}</span><br>
-        <a href="#" onclick="event.preventDefault();go('detail','${c.id}')" style="color:#3B9EFF">상세 보기</a>
-      </div>`);
-      iw.open(_gmap,m);
+
+    const iw=new naver.maps.InfoWindow({
+      content:_makeIwContent(c,color,u),
+      borderWidth:0,
+      backgroundColor:'transparent',
+      disableAnchor:true,
+      pixelOffset:new naver.maps.Point(0,-10),
     });
-    _gmarkers.push(m);
+
+    naver.maps.Event.addListener(m,'click',()=>{
+      // 열려있으면 닫고, 닫혀있으면 열기
+      if(iw.getMap()) iw.close();
+      else iw.open(_nmap,m);
+    });
+    _nmarkers.push(m);
   });
 }
 
 function initDetailMap(c){
-  if(!window.google?.maps||!c.lat)return;
+  if(!window.naver?.maps||!c.lat)return;
   setTimeout(()=>{
     const el=document.getElementById('dmmap');if(!el)return;
-    const m=new google.maps.Map(el,{center:{lat:c.lat,lng:c.lng},zoom:16,
-      styles:[{elementType:'geometry',stylers:[{color:'#1d2c3f'}]},
-        {elementType:'labels.text.fill',stylers:[{color:'#8baabf'}]},
-        {featureType:'road',elementType:'geometry',stylers:[{color:'#243a52'}]},
-        {featureType:'water',elementType:'geometry',stylers:[{color:'#0d1b2a'}]},
-        {featureType:'poi',stylers:[{visibility:'off'}]}],
-      disableDefaultUI:true,zoomControl:true});
-    new google.maps.Marker({position:{lat:c.lat,lng:c.lng},map:m,title:c.companyName});
+    const mapInst=new naver.maps.Map(el,{
+      center:new naver.maps.LatLng(c.lat,c.lng),
+      zoom:17,
+      mapTypeControl:false,
+      zoomControl:true,
+      zoomControlOptions:{
+        position:naver.maps.Position.TOP_RIGHT,
+        style:naver.maps.ZoomControlStyle.SMALL,
+      },
+      scaleControl:false,
+      logoControl:true,
+      mapDataControl:false,
+    });
+    const fullName=c.companyName+(c.branchName?' '+c.branchName:'');
+    const u=getU(c);
+    const color=u.cls==='u-r'?'#E05252':u.cls==='u-o'?'#E8923A':u.cls==='u-y'?'#F0C040':'#2ECC71';
+    new naver.maps.Marker({
+      position:new naver.maps.LatLng(c.lat,c.lng),
+      map:mapInst,
+      icon:{
+        content:_makeMarkerEl(fullName,color),
+        anchor:new naver.maps.Point(7,7),
+      },
+      title:fullName,
+    });
   },150);
 }
 
@@ -811,10 +827,6 @@ function go(p,param=null){
   page=p;pageParam=param;window.scrollTo(0,0);render();
   if(p==='settings'&&S?.user?.role==='admin'&&CFG.gasUrl){
     setTimeout(()=>_refreshMembers(),300);
-  }
-  // 스캔 페이지 진입 시 Tesseract 워커 백그라운드 사전 초기화
-  if(p==='scan'&&!_tessReady&&!_tessLoading){
-    setTimeout(()=>initTesseract().then(()=>render()).catch(()=>{}), 500);
   }
 }
 
@@ -839,12 +851,18 @@ function reqGPS(){
     if(gps.accuracy>500){
       toast(`⚠ 위치 정확도 ${gps.accuracy}m — 실외에서 다시 시도하세요`);
     }
-    if(page==='map'&&_gmap){
-      _gmap.panTo({lat:gps.lat,lng:gps.lng});
-      _gmap.setZoom(16);
-      new google.maps.Marker({position:{lat:gps.lat,lng:gps.lng},map:_gmap,
-        icon:{path:google.maps.SymbolPath.CIRCLE,scale:9,fillColor:'#3B9EFF',fillOpacity:1,strokeColor:'#fff',strokeWeight:2},
-        title:`현재 위치 (정확도 ±${gps.accuracy}m)`});
+    if(page==='map'&&_nmap){
+      _nmap.panTo(new naver.maps.LatLng(gps.lat,gps.lng));
+      _nmap.setZoom(16);
+      new naver.maps.Marker({
+        position:new naver.maps.LatLng(gps.lat,gps.lng),
+        map:_nmap,
+        icon:{
+          content:`<div style="width:16px;height:16px;border-radius:50%;background:#3B9EFF;border:3px solid #fff;box-shadow:0 2px 8px rgba(59,158,255,.7)"></div>`,
+          anchor:new naver.maps.Point(8,8),
+        },
+        title:`현재 위치 (정확도 ±${gps.accuracy}m)`,
+      });
     }else if(page==='map'){initGMap();}
   };
 
@@ -947,97 +965,139 @@ function showGpsHelp(reason){
 // ═══════════════════════════════════════════════
 // 8. GEOCODING
 // ═══════════════════════════════════════════════
-// 거래처명으로 Places Text Search → 주소 + 좌표 자동 가져오기
-async function searchClientByName(id){
-  const c=S.clients.find(x=>x.id===id);
-  if(!c){return;}
-  if(!CFG.mapsKey||!window.google?.maps){
-    toast('Google Maps API가 설정되어 있지 않습니다');return;
-  }
-  if(!window.google.maps.places){
-    toast('Places API가 활성화되지 않았습니다 (Google Cloud에서 활성화 필요)');return;
-  }
 
-  toast('거래처 정보 검색 중...');
-  const query=c.companyName+(c.branchName?' '+c.branchName:'');
-
-  // 신규 Places API (v=beta) 우선 사용
-  if(google.maps.places.Place?.searchByText){
-    try{
-      const {places}=await google.maps.places.Place.searchByText({
-        textQuery: query,
-        fields: ['displayName','formattedAddress','location'],
-        language: 'ko-KR',
-        region: 'kr',
-      });
-      if(places?.length){
-        const p=places[0];
-        set({clients:S.clients.map(x=>x.id===id?{
-          ...x,
-          address: p.formattedAddress||x.address,
-          lat: p.location.lat(),
-          lng: p.location.lng(),
-        }:x)});
-        toast('✓ 주소 + 좌표 등록됨');
-        if(page==='map'&&_gmap)placeMapMarkers();
-      }else{ toast('검색 결과 없음'); }
-      return;
-    }catch(e){ console.warn('신규 Places API 실패, 구버전 fallback:', e); }
-  }
-
-  // 구버전 fallback (PlacesService)
-  const svc=new google.maps.places.PlacesService(document.createElement('div'));
-  svc.textSearch({query, region:'kr', language:'ko'}, (res,status)=>{
-    if(status===google.maps.places.PlacesServiceStatus.OK && res[0]){
-      const p=res[0];
-      const loc=p.geometry.location;
-      set({clients:S.clients.map(x=>x.id===id?{
-        ...x,
-        address: p.formatted_address || x.address,
-        lat: loc.lat(),
-        lng: loc.lng(),
-      }:x)});
-      toast('✓ 주소 + 좌표 등록됨');
-      if(page==='map'&&_gmap)placeMapMarkers();
-    }else{ toast(`검색 결과 없음 (${status})`); }
-  });
+// ── 한국 영토 범위 체크 (해외 엉뚱한 좌표 차단) ──────────────
+function isInKorea(lat,lng){
+  return lat>=33.0&&lat<=39.0&&lng>=124.0&&lng<=132.0;
 }
 
-async function geocodeClient(id){
+// ── 검색 결과명이 거래처와 진짜 일치하는지 엄격 판단 ──────────
+// 판단 규칙:
+//   ① 회사명 핵심(≥3자)이 결과명에 반드시 포함 — 없으면 즉시 거부
+//   ② 지점명이 없으면 ①만으로 통과
+//   ③ 지점명이 있으면 결과명에 지점명(또는 접미사 제거 후 위치키)도 포함되어야 통과
+//      예) "서린동지점" → 위치키="서린동" / "금호본점" → 위치키="금호"
+// ※ "검색어가 결과를 포함" 방향(norm.includes(disp)) 은 절대 사용 안 함
+//    — 국민은행 본점이 검색돼도 "국민은행서린동지점".includes("국민은행")=true가 되어
+//      엉뚱한 장소가 수락되는 버그의 원인이었음
+function _isConfidentMatch(c, resultName){
+  if(!resultName) return false;
+
+  // 공백·괄호·법인명 표기 제거
+  const strip=s=>(s||'').replace(/[\s\(\)\[\]㈜()]/g,'');
+  const rn=strip(resultName);
+  const cn=strip(c.companyName);    // 예: "새마을금고","국민은행"
+  const bn=strip(c.branchName||''); // 예: "금호본점","서린동지점",""
+
+  // ① 회사명이 결과명에 포함 (최소 3자 이상만 검사)
+  if(cn.length<3||!rn.includes(cn)) return false;
+
+  // ② 지점명 없으면 통과
+  if(!bn) return true;
+
+  // ③ 지점명 또는 위치키가 결과명에 포함
+  //    접미사(지점/본점/지소/출장소/영업점/센터) 제거 → 위치 식별 키워드만 추출
+  const locKey=bn.replace(/(지점|본점|지소|출장소|영업점|센터|점)$/,'');
+  if(rn.includes(bn))             return true; // "서린동지점" 그대로 포함
+  if(locKey.length>=2&&rn.includes(locKey)) return true; // "서린동" 포함
+  return false;
+}
+
+// ── 거래처명으로 Naver Maps Service Geocode 검색 ───────────
+async function searchClientByName(id){
   const c=S.clients.find(x=>x.id===id);
-  if(!c){return;}
-  // 주소가 없으면 거래처명으로 자동 검색
-  if(!c.address){
-    if(CFG.mapsKey&&window.google?.maps?.places){
-      return searchClientByName(id); // searchClientByName이 신규/구버전 자동 처리
-    }
-    toast('주소 정보가 없습니다');return;
+  if(!c) return;
+  if(!window.naver?.maps){
+    toast('네이버 지도 API가 설정되어 있지 않습니다'); return;
   }
 
-  // 주소가 있으면 Geocoding
-  if(CFG.mapsKey&&window.google?.maps){
-    const gc=new google.maps.Geocoder();
-    gc.geocode({address:c.address,region:'KR'},async(res,status)=>{
-      if(status==='OK'&&res[0]){
-        const loc=res[0].geometry.location;
-        set({clients:S.clients.map(x=>x.id===id?{...x,lat:loc.lat(),lng:loc.lng()}:x)});
-        toast('✓ 좌표 등록됨');
-        if(page==='map'&&_gmap)placeMapMarkers();
-      }else{
-        try{const{lat,lng}=await Gem.geocode(c.address);
-          set({clients:S.clients.map(x=>x.id===id?{...x,lat,lng}:x)});
-          toast('✓ 좌표 등록됨 (AI)');
-          if(page==='map'&&_gmap)placeMapMarkers();
-        }catch(e){toast('좌표 검색 실패: '+e.message);}
-      }
-    });
+  const fullName=(c.companyName+(c.branchName?' '+c.branchName:'')).trim();
+  toast(`"${fullName}" 위치 검색 중...`);
+
+  // ── 쿼리 목록: 가장 구체적인 형태부터 ──────────────────────
+  // 한국 금융기관명은 "위치키+회사명" 합성 형태로 등록된 경우 많음
+  // 예) "금호새마을금고" (회사="새마을금고", 지점="금호본점")
+  const queries=[];
+  if(c.branchName){
+    const locKey=c.branchName.replace(/(지점|본점|지소|출장소|영업점|센터|점)$/,'').trim();
+    if(locKey&&locKey!==c.branchName) queries.push(locKey+c.companyName);
+    queries.push(`${c.companyName} ${c.branchName}`);
+    queries.push(`${c.branchName} ${c.companyName}`);
   }else{
-    toast('좌표 검색 중 (AI)...');
-    try{const{lat,lng}=await Gem.geocode(c.address);
-      set({clients:S.clients.map(x=>x.id===id?{...x,lat,lng}:x)});
-      toast('✓ 좌표 등록됨');
-      if(page==='map'&&_gmap)placeMapMarkers();
-    }catch(e){toast('좌표 검색 실패: '+e.message);}
+    queries.push(c.companyName);
+  }
+
+  // 결과 처리 공통 함수
+  const tryApply=(addr,lat,lng,queryUsed)=>{
+    if(!isInKorea(lat,lng)){
+      console.warn(`[NaverGeo] 한국 외 좌표 거부: (${lat},${lng})`);
+      return false;
+    }
+    set({clients:S.clients.map(x=>x.id===id?{...x,address:addr||x.address,lat,lng}:x)});
+    toast(`✓ 위치 등록: ${queryUsed}`);
+    if(page==='map'&&_nmap) placeMapMarkers();
+    return true;
+  };
+
+  // ── naver.maps.Service.geocode 순차 시도 ─────────────────
+  for(const q of queries){
+    const result=await new Promise(resolve=>{
+      naver.maps.Service.geocode({query:q},(status,response)=>{
+        if(status===naver.maps.Service.Status.OK&&response.v2?.addresses?.length){
+          resolve(response.v2.addresses[0]);
+        }else{
+          console.warn(`[NaverGeo] "${q}" → ${status}`);
+          resolve(null);
+        }
+      });
+    });
+    if(result){
+      const lat=parseFloat(result.y), lng=parseFloat(result.x);
+      const addr=result.roadAddress||result.jibunAddress||'';
+      if(tryApply(addr,lat,lng,q)) return;
+    }
+  }
+  toast('⚠ 위치를 특정할 수 없습니다 — 주소를 직접 입력 후 재검색하세요');
+}
+
+// ── 주소 기반 Geocoding (주소가 있을 때 우선 사용) ────────────
+async function geocodeClient(id){
+  const c=S.clients.find(x=>x.id===id);
+  if(!c) return;
+
+  // 주소 없음 → 거래처명 검색으로 위임
+  if(!c.address){
+    if(CFG.mapsKey&&window.naver?.maps) return searchClientByName(id);
+    toast('주소 정보가 없습니다'); return;
+  }
+
+  // 주소 있음 → Naver Maps Service.geocode (geocoder 서브모듈)
+  if(CFG.mapsKey&&window.naver?.maps){
+    toast('주소로 좌표 검색 중...');
+    naver.maps.Service.geocode(
+      {query:c.address},
+      (status,response)=>{
+        if(status===naver.maps.Service.Status.OK&&response.v2?.addresses?.length){
+          const result=response.v2.addresses[0];
+          const lat=parseFloat(result.y), lng=parseFloat(result.x);
+          if(!isInKorea(lat,lng)){
+            toast('⚠ 검색된 좌표가 한국 영역 밖입니다 — 주소를 확인해주세요');
+            return;
+          }
+          const addr=result.roadAddress||result.jibunAddress||c.address;
+          set({clients:S.clients.map(x=>x.id===id?{...x,address:addr,lat,lng}:x)});
+          toast('✓ 좌표 등록됨 (주소)');
+          if(page==='map'&&_nmap) placeMapMarkers();
+        }else{
+          // Geocode 실패 → 거래처명 검색으로 폴백
+          console.warn('[NaverGeo] Geocode 실패, 거래처명 검색으로 폴백:', status);
+          toast('주소 검색 실패 — 거래처명으로 재시도 중...');
+          searchClientByName(id);
+        }
+      }
+    );
+  }else{
+    toast('네이버 지도 Client ID가 설정되지 않았습니다');
   }
 }
 
@@ -1078,7 +1138,7 @@ function PageLogin(){
         ${!hasCfg?`<div style="margin-top:4px;font-size:11px;color:var(--or);text-align:center;line-height:1.6">⚠ 관리자 초기 설정이 필요합니다<br>관리자 로그인 후 설정을 완료해주세요</div>`:''}
       </div>
       <div style="font-size:10px;color:var(--tx3);margin-top:28px;text-align:center;line-height:1.8">
-        Powered by Gemini 2.0 Flash · Google Sheets · Google Maps
+        Gemini AI · Google Sheets · 네이버 지도
       </div>
     </div>`;
 
@@ -1608,14 +1668,14 @@ function PageMap(){
   return`
   <div class="hdr">
     <div class="hdr-row">
-      <div><div class="hdr-t">지도</div><div class="hdr-s">Google Maps · 거래처 현황</div></div>
+      <div><div class="hdr-t">지도</div><div class="hdr-s">네이버 지도 · 거래처 현황</div></div>
       <button class="btn bs bsm" onclick="reqGPS()" style="min-width:80px">
         ${gpsLoading?'<div class="spin"></div>':'📍 위치 인식'}</button>
     </div>
   </div>
   <div class="page">
     ${gps?`<div class="gpb"><div class="gpd"></div><span>${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E${gps.accuracy?` · 정확도 ±${gps.accuracy}m`:''}</span></div>`:''}
-    ${CFG.mapsKey?'':'<div style="padding:8px 14px;font-size:11px;color:var(--tx3);background:var(--rbg);border-bottom:1px solid var(--bd)">⚠ Maps API 키 미설정 — 설정에서 입력하면 Google Maps가 표시됩니다</div>'}
+    ${CFG.mapsKey?'':'<div style="padding:8px 14px;font-size:11px;color:var(--tx3);background:var(--rbg);border-bottom:1px solid var(--bd)">⚠ 네이버 지도 Client ID 미설정 — 설정에서 입력하면 지도가 표시됩니다</div>'}
     <div id="gmap" style="display:${CFG.mapsKey?'block':'none'}"></div>
 
     <div class="card" style="margin-top:0;margin-bottom:10px">
@@ -1885,46 +1945,36 @@ async function doImportConfirm(){
   set({clients:[...S.clients,...fresh]},true);
   saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
 
-  // Google Maps Places가 로드되어 있으면 자동 주소 검색 (백그라운드)
-  if(CFG.mapsKey&&window.google?.maps?.places){
-    importState.progress=`주소 자동 검색 중... (0/${fresh.length})`;render();
+  // 네이버 지도 API가 로드되어 있으면 자동 좌표 검색 (백그라운드)
+  if(CFG.mapsKey&&window.naver?.maps){
+    importState.progress=`좌표 자동 검색 중... (0/${fresh.length})`;render();
     let done=0;
     for(const c of fresh){
-      // 신규 Places API 우선, fallback은 구버전
       await (async()=>{
         try{
-          if(google.maps.places.Place?.searchByText){
-            const {places}=await google.maps.places.Place.searchByText({
-              textQuery:c.companyName+(c.branchName?' '+c.branchName:''),
-              fields:['displayName','formattedAddress','location'],
-              language:'ko-KR', region:'kr',
-            });
-            if(places?.length){
-              const p=places[0];
-              const idx=S.clients.findIndex(x=>x.id===c.id);
-              if(idx>=0) S.clients[idx]={...S.clients[idx],address:p.formattedAddress||'',lat:p.location.lat(),lng:p.location.lng()};
-            }
-          } else {
-            await new Promise(resolve=>{
-              const svc=new google.maps.places.PlacesService(document.createElement('div'));
-              svc.textSearch({query:c.companyName+(c.branchName?' '+c.branchName:''),region:'kr',language:'ko'},(res,status)=>{
-                if(status===google.maps.places.PlacesServiceStatus.OK&&res[0]){
-                  const loc=res[0].geometry.location;
+          const query=c.address||(c.companyName+(c.branchName?' '+c.branchName:''));
+          await new Promise(resolve=>{
+            naver.maps.Service.geocode({query},(status,response)=>{
+              if(status===naver.maps.Service.Status.OK&&response.v2?.addresses?.length){
+                const result=response.v2.addresses[0];
+                const lat=parseFloat(result.y), lng=parseFloat(result.x);
+                if(isInKorea(lat,lng)){
+                  const addr=result.roadAddress||result.jibunAddress||c.address||'';
                   const idx=S.clients.findIndex(x=>x.id===c.id);
-                  if(idx>=0) S.clients[idx]={...S.clients[idx],address:res[0].formatted_address||'',lat:loc.lat(),lng:loc.lng()};
+                  if(idx>=0) S.clients[idx]={...S.clients[idx],address:addr,lat,lng};
                 }
-                resolve();
-              });
+              }
+              resolve();
             });
-          }
-        }catch(e){ console.warn('Places 검색 오류 (스킵):', c.companyName, e); }
+          });
+        }catch(e){ console.warn('네이버 Geocode 오류 (스킵):', c.companyName, e); }
       })();
       done++;
-      importState.progress=`주소 자동 검색 중... (${done}/${fresh.length})`;
+      importState.progress=`좌표 자동 검색 중... (${done}/${fresh.length})`;
       render();
-      await new Promise(r=>setTimeout(r,120)); // rate limit
+      await new Promise(r=>setTimeout(r,150)); // rate limit
     }
-    // 루프 완료 후 상태 일관성 보장 (중간 직접 변경된 S.clients 확정 저장)
+    // 루프 완료 후 상태 일관성 보장
     set({clients:S.clients},true);
     saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});
   }
@@ -2100,7 +2150,7 @@ async function doViewTeamMember(memberName){
   }
 }
 
-let sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:'',_ocrText:null};
+let sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:''};
 function PageScan(){
   let body='';
   if(sc.step===0)body=`
@@ -2114,14 +2164,14 @@ function PageScan(){
     <div class="card" style="margin-top:0">
       <div style="font-size:11.5px;color:var(--tx2);line-height:1.75">
         <b style="color:var(--tx)">AI 명함 인식 안내</b><br>
-        • <b style="color:var(--teal)">Tesseract OCR</b> (브라우저 내장) → 텍스트 추출<br>
-        • <b style="color:var(--ac)">Gemini 2.0 Flash</b> → 정보 구조화<br>
-        • API 호출 최소화 · 요청 한도 초과 없음<br>
-        • 인식 후 내용 수정 후 저장 가능
+        • <b style="color:var(--ac)">Claude Vision</b> 으로 이미지 직접 분석<br>
+        • 한국어 명함 정확도 높음 (Sonnet 4 모델)<br>
+        • API 키 불필요 · 인식 후 미리보기 → 저장
       </div>
-      ${!_tessReady?`<div style="font-size:10.5px;color:var(--tx3);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">
-        💡 첫 실행 시 한국어 팩 다운로드(~20MB)로 10초 내외 소요됩니다
-      </div>`:'<div style="font-size:10.5px;color:var(--gn);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">✓ OCR 엔진 준비됨 — 즉시 분석 가능</div>'}
+      <div style="font-size:10.5px;color:var(--tx3);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">
+        💡 모델: <b style="color:var(--ac);font-family:var(--mo)">claude-sonnet-4</b>
+        <span style="color:var(--gn)"> · 항상 활성화</span>
+      </div>
     </div>`;
   if(sc.step===1)body=`
     <div style="padding:0 14px">
@@ -2130,7 +2180,7 @@ function PageScan(){
         <div style="text-align:center;padding:18px 0">
           <div class="spin" style="width:28px;height:28px;border-width:3px;margin:0 auto 10px"></div>
           <div style="font-size:13px;font-weight:600;color:var(--tx2);margin-bottom:4px">${sc.progress||'분석 중...'}</div>
-          <div style="font-size:10.5px;color:var(--tx3)">Tesseract OCR → Gemini 구조화</div>
+          <div style="font-size:10.5px;color:var(--tx3)">Claude Vision (Sonnet 4) 분석 중...</div>
         </div>`:''}
       ${sc.err?`<div style="color:var(--red);font-size:12px;padding:10px 12px;background:var(--rbg);border-radius:var(--rs);margin-bottom:10px;line-height:1.6">${sc.err.replace(/\n/g,'<br>')}</div>`:''}
       ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">
@@ -2141,40 +2191,89 @@ function PageScan(){
       <button class="btn bs mt2" onclick="resetScan()">다시 선택</button>
     </div>`;
 
-  // OCR 성공했지만 Gemini 한도 초과 — 추출된 텍스트 보여주기
-  if(sc.step==='ocr_fallback'&&sc._ocrText){
-    const lines=sc._ocrText.split('\n').filter(l=>l.trim());
-    body=`<div style="padding:0 14px">
-      <img src="data:image/jpeg;base64,${sc.b64}" style="width:100%;border-radius:var(--r);margin-bottom:10px;border:1px solid var(--bd)">
-      <div style="background:var(--obg);border:1px solid rgba(232,146,58,.3);border-radius:var(--rs);padding:10px 12px;margin-bottom:10px">
-        <div style="font-size:11.5px;font-weight:700;color:var(--or);margin-bottom:6px">⚠ Gemini 한도 초과 — OCR 텍스트는 인식됨</div>
-        <div style="font-size:10.5px;color:var(--tx3)">아래 텍스트를 참고해 직접 입력하거나, 잠시 후 재시도하세요.</div>
-      </div>
-      <div style="background:var(--bg3);border:1px solid var(--bd2);border-radius:var(--rs);padding:10px 12px;margin-bottom:12px;font-size:11.5px;line-height:1.9;color:var(--tx2);font-family:var(--mo);white-space:pre-wrap;max-height:160px;overflow-y:auto">${lines.join('\n')}</div>
-      <div class="row g2">
-        <button class="btn bp f1" onclick="doScanAI()">Gemini 재시도</button>
-        <button class="btn bs f1" onclick="sc={...sc,step:1,err:null};render()">뒤로</button>
-      </div>
-      <button class="btn bs mt2" onclick="resetScan()">다시 선택</button>
-    </div>`;
-  }
   if(sc.step===2&&sc.parsed){
     const p=sc.parsed;
     const dupes=S.clients.filter(c=>sim(c.companyName,p.companyName||'')>0.75);
-    body=`<div class="card" style="margin-top:0">
-      ${dupes.length?`<div style="background:var(--obg);border:1px solid rgba(232,146,58,.3);border-radius:var(--rs);padding:8px 11px;margin-bottom:11px;font-size:11px;color:var(--or)">⚠ 유사 거래처: ${dupes.map(d=>d.companyName).join(', ')}</div>`:''}
-      <div class="row g2" style="margin-bottom:11px"><span class="tag">AI 인식</span><span style="font-size:11px;color:var(--tx3)">확인 후 저장하세요</span></div>
-      <div class="ig"><label class="il">회사명 *</label><input type="text" id="f_co" value="${p.companyName||''}"></div>
-      <div class="ig"><label class="il">지점명</label><input type="text" id="f_br" value="${p.branchName||''}"></div>
-      <div class="ig"><label class="il">카테고리</label><select id="f_cat">${CATEGORIES.map(c=>`<option value="${c}" ${(p.category||autoCat(p.companyName||''))===c?'selected':''}>${c}</option>`).join('')}</select></div>
-      <div class="ig"><label class="il">담당자</label><input type="text" id="f_cn" value="${p.contactName||''}"></div>
-      <div class="ig"><label class="il">연락처</label><input type="text" id="f_cp" value="${p.contactPhone||''}"></div>
-      <div class="ig"><label class="il">주소</label><input type="text" id="f_ad" value="${p.address||''}"></div>
-      <button class="btn bp" onclick="saveCardC()">
-        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7" stroke-linecap="round"/></svg>
-        거래처 저장
-      </button>
-      <button class="btn bs mt2" onclick="resetScan()">취소</button>
+    // ── 디지털 명함 미리보기 (digital-namecard 스킬 스타일) ───────
+    const hasPhone = p.contactPhone;
+    const hasEmail = p.email;
+    const compDisplay = [p.companyName, p.branchName].filter(Boolean).join(' ');
+    const titleDisplay = [p.contactName, p.contactTitle].filter(Boolean).join(' · ');
+    body=`
+    <div style="padding:0 14px">
+      ${dupes.length?`<div style="background:var(--obg);border:1px solid rgba(232,146,58,.3);border-radius:var(--rs);padding:8px 11px;margin-bottom:10px;font-size:11px;color:var(--or)">⚠ 유사 거래처 발견: ${dupes.map(d=>d.companyName).join(', ')}</div>`:''}
+
+      <!-- ── 디지털 명함 미리보기 ── -->
+      <div style="background:linear-gradient(135deg,#1a3562 0%,#243A52 60%,#0D1B2A 100%);border-radius:16px;padding:20px 18px 16px;margin-bottom:14px;position:relative;overflow:hidden;border:1px solid rgba(59,158,255,.18);box-shadow:0 8px 32px rgba(0,0,0,.4)">
+        <!-- 배경 장식 원 -->
+        <div style="position:absolute;top:-30px;right:-30px;width:110px;height:110px;border-radius:50%;background:rgba(59,158,255,.07);pointer-events:none"></div>
+        <div style="position:absolute;bottom:-20px;left:-20px;width:80px;height:80px;border-radius:50%;background:rgba(78,205,196,.05);pointer-events:none"></div>
+
+        <!-- 브랜드 라인 -->
+        <div style="font-size:9px;font-weight:700;letter-spacing:.18em;color:rgba(59,158,255,.7);text-transform:uppercase;margin-bottom:12px;font-family:var(--mo)">HANA APPRAISAL — CARD SCAN</div>
+
+        <!-- 회사명 -->
+        <div style="font-size:15px;font-weight:700;color:#EDF2F7;line-height:1.3;margin-bottom:4px">${p.companyName||'—'}</div>
+        ${p.branchName?`<div style="font-size:11px;color:rgba(139,170,191,.8);margin-bottom:10px">${p.branchName}</div>`:`<div style="margin-bottom:10px"></div>`}
+
+        <!-- 구분선 -->
+        <div style="height:1px;background:rgba(255,255,255,.1);margin-bottom:10px"></div>
+
+        <!-- 담당자 -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+          <div>
+            <div style="font-size:14px;font-weight:600;color:#EDF2F7">${p.contactName||'—'}</div>
+            ${p.contactTitle?`<div style="font-size:10.5px;color:rgba(59,158,255,.85);margin-top:2px">${p.contactTitle}</div>`:''}
+          </div>
+          ${hasPhone?`<a href="tel:${p.contactPhone}" style="display:flex;align-items:center;gap:5px;background:rgba(59,158,255,.15);border:1px solid rgba(59,158,255,.3);border-radius:20px;padding:5px 11px;font-size:11px;font-weight:600;color:var(--ac);text-decoration:none">
+            <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.8 19.8 0 0 1 1.61 3.38 2 2 0 0 1 3.6 1.22h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 8.8a16 16 0 0 0 6.29 6.29l.95-.96a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" stroke-linecap="round"/></svg>
+            전화
+          </a>`:''}
+        </div>
+
+        <!-- 연락처 목록 -->
+        <div style="display:flex;flex-direction:column;gap:5px">
+          ${hasPhone?`<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:rgba(237,242,247,.75)">
+            <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="color:rgba(59,158,255,.6);flex-shrink:0"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.8 19.8 0 0 1 1.61 3.38 2 2 0 0 1 3.6 1.22h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 8.8a16 16 0 0 0 6.29 6.29l.95-.96a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" stroke-linecap="round"/></svg>
+            ${p.contactPhone}
+          </div>`:''}
+          ${hasEmail?`<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:rgba(237,242,247,.75)">
+            <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="color:rgba(59,158,255,.6);flex-shrink:0"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            ${p.email}
+          </div>`:''}
+          ${p.address?`<div style="display:flex;align-items:flex-start;gap:8px;font-size:10.5px;color:rgba(237,242,247,.55);margin-top:2px">
+            <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="color:rgba(59,158,255,.4);flex-shrink:0;margin-top:1px"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            ${p.address}
+          </div>`:''}
+        </div>
+
+        <!-- 연락처 저장 버튼 -->
+        ${(hasPhone||hasEmail)?`<button onclick="saveVCF_scan()" style="margin-top:12px;width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:rgba(237,242,247,.8);font-size:11px;font-weight:600;padding:7px;cursor:pointer;font-family:var(--fn);display:flex;align-items:center;justify-content:center;gap:5px">
+          <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87m-4-12a4 4 0 0 1 0 7.75" stroke-linecap="round"/></svg>
+          연락처 저장 (VCF)
+        </button>`:''}
+      </div>
+
+      <!-- ── AI 인식 결과 편집 폼 ── -->
+      <div class="card" style="margin:0 0 0">
+        <div class="row g2" style="margin-bottom:11px">
+          <span class="tag" style="background:rgba(59,158,255,.15);color:var(--ac);border:1px solid rgba(59,158,255,.3)">Claude Vision</span>
+          <span style="font-size:11px;color:var(--tx3)">내용 확인 후 저장하세요</span>
+        </div>
+        <div class="ig"><label class="il">회사명 *</label><input type="text" id="f_co" value="${p.companyName||''}"></div>
+        <div class="ig"><label class="il">지점명</label><input type="text" id="f_br" value="${p.branchName||''}"></div>
+        <div class="ig"><label class="il">카테고리</label><select id="f_cat">${CATEGORIES.map(c=>`<option value="${c}" ${(p.category||autoCat(p.companyName||''))===c?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div class="ig"><label class="il">담당자</label><input type="text" id="f_cn" value="${p.contactName||''}"></div>
+        <div class="ig"><label class="il">직책</label><input type="text" id="f_ct" value="${p.contactTitle||''}"></div>
+        <div class="ig"><label class="il">연락처</label><input type="text" id="f_cp" value="${p.contactPhone||''}"></div>
+        <div class="ig"><label class="il">이메일</label><input type="text" id="f_em" value="${p.email||''}"></div>
+        <div class="ig"><label class="il">주소</label><input type="text" id="f_ad" value="${p.address||''}"></div>
+        <button class="btn bp" onclick="saveCardC()">
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7" stroke-linecap="round"/></svg>
+          거래처 저장
+        </button>
+        <button class="btn bs mt2" onclick="resetScan()">취소</button>
+      </div>
     </div>`;
   }
   return`
@@ -2185,7 +2284,7 @@ function PageScan(){
           <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
         </button>
         <div><div class="hdr-t" style="font-size:16px">신규 거래처 등록</div>
-        <div class="hdr-s">Tesseract OCR + Gemini</div></div>
+        <div class="hdr-s">Claude Vision OCR</div></div>
       </div>
     </div>
   </div>
@@ -2221,35 +2320,54 @@ function onCardFile(input){
       const origKB=Math.round(e.target.result.length*0.75/1024);
       const compKB=Math.round(compressed.length*0.75/1024);
       console.log(`명함 압축: ${origKB}KB → ${compKB}KB (${w}×${h}px)`);
-      sc={step:1,b64:compressed,parsed:null,loading:false,err:null,progress:'',_ocrText:null};render();
+      sc={step:1,b64:compressed,parsed:null,loading:false,err:null,progress:''};render();
     };
     img.src=e.target.result;
   };
   r.readAsDataURL(f);
 }
 async function doScanAI(){
-  sc={...sc,loading:true,err:null,progress:'OCR 준비 중...',_ocrText:null};render();
+  sc={...sc,loading:true,err:null,progress:'Claude Vision 분석 중...'};render();
   try{
-    const p=await Gem.card(sc.b64,(msg)=>{sc={...sc,progress:msg};render();});
+    const p=await ClaudeAI.card(sc.b64,(msg)=>{sc={...sc,progress:msg};render();});
     sc={...sc,step:2,parsed:p,loading:false,progress:''};
   }catch(e){
-    const isRateLimit = e.message.startsWith('RATE_LIMIT');
-    const ocrText = sc._ocrText||null;
-    const errMsg = isRateLimit
-      ? 'Gemini 요청 한도 초과'+(ocrText?'\n아래 OCR 텍스트로 직접 입력해보세요':'.\n잠시 후 재시도하거나 직접 입력해주세요.')
-      : e.message;
-    sc={...sc, loading:false, err:errMsg, progress:'',
-      step: isRateLimit&&ocrText ? 'ocr_fallback' : 1,
-    };
+    const errMsg = e.message || 'AI 인식 실패. 직접 입력해 주세요.';
+    sc={...sc, loading:false, err:errMsg, progress:'', step:1};
   }
   render();
 }
-function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:'',_ocrText:null};render();}function saveCardC(){
+function resetScan(){sc={step:0,b64:null,parsed:null,loading:false,err:null,progress:''};render();}
+function saveVCF_scan(){
+  const p=sc.parsed;if(!p)return;
+  const name=[p.contactName,p.contactTitle].filter(Boolean).join(' ');
+  const vcard=[
+    'BEGIN:VCARD','VERSION:3.0',
+    `FN:${name||p.companyName}`,
+    `ORG:${p.companyName}${p.branchName?' '+p.branchName:''}`,
+    p.contactTitle?`TITLE:${p.contactTitle}`:'',
+    p.contactPhone?`TEL;TYPE=WORK:${p.contactPhone}`:'',
+    p.email?`EMAIL:${p.email}`:'',
+    p.address?`ADR;TYPE=WORK:;;${p.address};;;`:'',
+    'END:VCARD'
+  ].filter(Boolean).join('\r\n');
+  const blob=new Blob([vcard],{type:'text/vcard;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`${name||p.companyName}.vcf`;
+  a.click();
+  toast('✓ 연락처 저장 파일 다운로드됨');
+}
+function saveCardC(){
   const name=document.getElementById('f_co')?.value?.trim();if(!name){toast('회사명을 입력하세요');return;}
   const addr=document.getElementById('f_ad')?.value?.trim()||'';
   const c={id:uid(),companyName:name,branchName:document.getElementById('f_br')?.value?.trim()||'',
-    category:document.getElementById('f_cat')?.value||'일반기업',contactName:document.getElementById('f_cn')?.value?.trim()||'',
-    contactPhone:document.getElementById('f_cp')?.value?.trim()||'',address:addr,
+    category:document.getElementById('f_cat')?.value||'일반기업',
+    contactName:document.getElementById('f_cn')?.value?.trim()||'',
+    contactTitle:document.getElementById('f_ct')?.value?.trim()||'',
+    contactPhone:document.getElementById('f_cp')?.value?.trim()||'',
+    email:document.getElementById('f_em')?.value?.trim()||'',
+    address:addr,
     ownerName:S.user?.name||'',lastVisitDate:null,lat:null,lng:null,createdAt:new Date().toISOString()};
   set({clients:[...S.clients,c]});resetScan();_autoSync('✓ 거래처 등록됨');
   if(addr)setTimeout(()=>geocodeClient(c.id),500);
@@ -2320,31 +2438,74 @@ function PageSettings(){
       </div>
     </div>
 
-    <div class="slbl">Google Maps API 키</div>
+    <div class="slbl">네이버 지도 API</div>
     <div class="card">
-      <div class="ig"><label class="il">Maps API 키 (지도 · 좌표검색 · 명함 OCR)</label>
-        <input type="password" id="s_mk" value="${CFG.mapsKey}" placeholder="AIza..."></div>
+      <div class="ig"><label class="il">네이버 클라우드 플랫폼 Client ID (지도 · 좌표검색)</label>
+        <input type="text" id="s_mk" value="${CFG.mapsKey}" placeholder="네이버 클라우드 플랫폼 Client ID"></div>
       <button class="btn bs bsm" style="width:auto" onclick="saveMapsKey()">저장 및 지도 로드</button>
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.8">
-        Maps JavaScript API + Geocoding API + Places API 활성화 필요.<br>
+        네이버 클라우드 플랫폼에서 <b>Maps JavaScript API</b> 앱 등록 후 Client ID 입력.<br>
+        서비스 URL에 앱 도메인을 반드시 등록하세요.<br>
         미설정 시 Gemini AI로 주소 검색을 대체합니다.
       </div>
     </div>
 
-    <div class="slbl">Gemini API 키</div>
+    <div class="slbl">AI 명함 OCR</div>
     <div class="card">
-      <div class="ig"><label class="il">Gemini API 키 (명함 OCR · AI 주소검색)</label>
+      ${CFG.gasUrl ? `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--gn);flex-shrink:0"></div>
+        <span style="font-size:12px;font-weight:600;color:var(--gn)">Claude Vision (GAS 프록시) 활성화됨</span>
+      </div>
+      <div style="font-size:11px;color:var(--tx2);line-height:1.75">
+        명함 사진 → <b style="color:var(--ac)">GAS 서버</b> → <b style="color:var(--ac)">Claude Vision</b><br>
+        CORS 없이 안정적으로 동작합니다
+      </div>` : CFG.geminiKey ? `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--yw);flex-shrink:0"></div>
+        <span style="font-size:12px;font-weight:600;color:var(--yw)">Gemini Vision 폴백 모드</span>
+      </div>
+      <div style="font-size:11px;color:var(--tx2);line-height:1.75">
+        GAS URL 미설정 → Gemini API로 OCR 처리 중<br>
+        <span style="color:var(--tx3)">GAS URL 설정 시 Claude Vision으로 자동 전환</span>
+      </div>` : `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--red);flex-shrink:0"></div>
+        <span style="font-size:12px;font-weight:600;color:var(--red)">OCR 비활성화</span>
+      </div>
+      <div style="font-size:11px;color:var(--or);line-height:1.75">
+        GAS URL 또는 Gemini API 키 중 하나를 설정해주세요
+      </div>`}
+      <div style="font-size:10px;color:var(--tx3);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd);line-height:1.7">
+        라우팅: GAS ocrCard 액션 → (실패 시) Gemini Vision 폴백
+      </div>
+    </div>
+
+    <div class="slbl">Gemini API 키 (주소검색 · 목록 파싱)</div>
+    <div class="card">
+      <div class="ig"><label class="il">Gemini API 키 (AI 주소검색 · 엑셀 파싱)</label>
         <input type="password" id="s_gk" value="${CFG.geminiKey}" placeholder="AIza...">
+      </div>
+      <div class="ig" style="margin-top:10px"><label class="il">Gemini 모델명</label>
+        <input type="text" id="s_gm" value="${CFG.geminiModel||GEMINI_MODEL_DEFAULT}"
+          placeholder="gemini-2.5-pro"
+          list="gemini-models">
+        <datalist id="gemini-models">
+          <option value="gemini-2.5-pro">
+          <option value="gemini-2.5-flash">
+          <option value="gemini-2.0-flash">
+          <option value="gemini-1.5-pro">
+        </datalist>
       </div>
       <div class="row g2" style="flex-wrap:wrap;align-items:center">
         <button class="btn bs bsm" style="width:auto" onclick="saveGeminiKey()">저장</button>
         ${CFG.geminiKey
-          ? '<span style="font-size:10.5px;color:var(--gn)">✓ 키 설정됨 (AI 주소검색용)</span>'
-          : '<span style="font-size:10.5px;color:var(--or)">⚠ 미설정 — AI 주소검색 비활성화</span>'}
+          ? `<span style="font-size:10.5px;color:var(--gn)">✓ 키 설정됨 · <b style="font-family:var(--mo)">${CFG.geminiModel||GEMINI_MODEL_DEFAULT}</b></span>`
+          : '<span style="font-size:10.5px;color:var(--or)">⚠ 미설정 — AI 주소검색 비활성화 (명함 OCR은 정상)</span>'}
       </div>
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.8">
-        명함 OCR 2단계(구조화) 및 AI 주소검색에 사용됩니다.<br>
-        Google AI Studio에서 발급 · <b style="color:var(--ac)">gemini-2.0-flash</b> 모델 사용
+        AI 주소 좌표검색 · 엑셀/CSV 거래처 파싱에 사용됩니다.<br>
+        Google AI Studio에서 발급 · 권장 모델: <b style="color:var(--ac)">gemini-2.5-pro</b>
       </div>
     </div>
 
@@ -2362,6 +2523,40 @@ function PageSettings(){
       <button class="btn bs bsm" style="margin-top:8px" onclick="navigator.clipboard.writeText(CFG.gasUrl).then(()=>toast('복사됨'))">📋 URL 복사</button>`:`
       <div style="font-size:11.5px;color:var(--or);text-align:center;padding:8px">
         ⚠ 먼저 GAS URL을 입력하세요
+      </div>`}
+    </div>
+
+    <!-- ── 모바일 설정 동기화 QR ── -->
+    <div class="slbl">📱 모바일 설정 동기화</div>
+    <div class="card" style="background:linear-gradient(135deg,var(--bg3),var(--bg2));border-color:rgba(59,158,255,.25)">
+      <div style="display:flex;align-items:flex-start;gap:11px;margin-bottom:12px">
+        <div style="width:38px;height:38px;border-radius:10px;background:rgba(59,158,255,.15);border:1px solid rgba(59,158,255,.3);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px">📲</div>
+        <div>
+          <div style="font-size:13px;font-weight:700;margin-bottom:3px">한 번만 스캔하면 끝</div>
+          <div style="font-size:11px;color:var(--tx2);line-height:1.65">
+            GAS URL · 네이버 Maps Client ID · Gemini 키 · 관리자 비밀번호를<br>
+            <b style="color:var(--ac)">QR 하나</b>에 담아 모바일에 자동 적용합니다
+          </div>
+        </div>
+      </div>
+      ${CFG.gasUrl ? `
+      <div style="display:flex;gap:8px">
+        <button class="btn bp" style="flex:1;padding:10px" onclick="showQRCode()">
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h.01M14 17h3M17 14v3M20 17h.01M20 14h.01"/></svg>
+          QR 코드 보기
+        </button>
+        <button class="btn bs" style="flex:1;padding:10px" onclick="copyConfigLink()">
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          링크 복사
+        </button>
+      </div>
+      <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.6">
+        ① QR 코드 → 모바일 카메라로 스캔<br>
+        ② 또는 링크를 카카오톡/문자로 전송 후 모바일에서 열기<br>
+        ③ 접속 즉시 모든 설정이 자동 저장됨
+      </div>` : `
+      <div style="background:var(--obg);border:1px solid rgba(232,146,58,.25);border-radius:var(--rs);padding:9px 11px;font-size:11.5px;color:var(--or)">
+        ⚠ GAS URL을 먼저 설정해야 QR을 생성할 수 있습니다
       </div>`}
     </div>
 
@@ -2582,15 +2777,16 @@ async function doCreateMaster(){
 function saveMapsKey(){
   const key=document.getElementById('s_mk')?.value?.trim()||'';
   CFG={...CFG,mapsKey:key};saveCfg(CFG);
-  const old=document.getElementById('gmaps-script');if(old)old.remove();
+  const old=document.getElementById('nmaps-script');if(old)old.remove();
   if(key)loadMapsScript();
-  toast('✓ Maps API 키 저장됨');
+  toast('✓ 네이버 지도 Client ID 저장됨');
 }
 
 function saveGeminiKey(){
   const key=document.getElementById('s_gk')?.value?.trim()||'';
-  CFG={...CFG,geminiKey:key};saveCfg(CFG);
-  toast(key?'✓ Gemini API 키 저장됨':'Gemini 키가 삭제됐습니다');
+  const model=(document.getElementById('s_gm')?.value?.trim()||GEMINI_MODEL_DEFAULT);
+  CFG={...CFG,geminiKey:key,geminiModel:model};saveCfg(CFG);
+  toast(key?`✓ Gemini 키 저장됨 · 모델: ${model}`:'Gemini 키가 삭제됐습니다');
   render();
 }
 
@@ -2696,9 +2892,11 @@ function toggleShare(){
 
 function makeConfigLink(){
   const data={};
-  if(CFG.mapsKey)   data.mk=CFG.mapsKey;
-  if(CFG.geminiKey) data.gk=CFG.geminiKey;
-  const b64=encodeURIComponent(btoa(JSON.stringify(data)));
+  if(CFG.gasUrl)     data.gu=CFG.gasUrl;
+  if(CFG.mapsKey)    data.mk=CFG.mapsKey;
+  if(CFG.geminiKey)  data.gk=CFG.geminiKey;
+  if(CFG.adminPwHash)data.ph=CFG.adminPwHash;
+  const b64=encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(data)))));
   const base=window.location.origin+window.location.pathname;
   return `${base}?cfg=${b64}`;
 }
@@ -2757,11 +2955,16 @@ async function doBatchGeo(){
   let done=0;
   for(const c of targets){
     try{
-      if(CFG.mapsKey&&window.google?.maps){
+      if(CFG.mapsKey&&window.naver?.maps){
         await new Promise(res=>{
-          new google.maps.Geocoder().geocode({address:c.address,region:'KR'},(r,st)=>{
-            if(st==='OK'&&r[0]){const loc=r[0].geometry.location;
-              S.clients=S.clients.map(x=>x.id===c.id?{...x,lat:loc.lat(),lng:loc.lng()}:x);done++;}
+          naver.maps.Service.geocode({query:c.address},(status,response)=>{
+            if(status===naver.maps.Service.Status.OK&&response.v2?.addresses?.length){
+              const result=response.v2.addresses[0];
+              const lat=parseFloat(result.y), lng=parseFloat(result.x);
+              if(isInKorea(lat,lng)){
+                S.clients=S.clients.map(x=>x.id===c.id?{...x,lat,lng}:x);done++;
+              }
+            }
             res();
           });
         });
@@ -2774,7 +2977,7 @@ async function doBatchGeo(){
   }
   saveUserData(S.user?.name||'guest',{clients:S.clients,visits:S.visits,cycles:S.cycles,synced:S.synced,shareEnabled:S.shareEnabled});render();
   toast(`✓ ${done}/${targets.length}개 좌표 등록됨`);
-  if(page==='map'&&_gmap)placeMapMarkers();
+  if(page==='map'&&_nmap)placeMapMarkers();
 }
 function doExport(){
   const blob=new Blob([JSON.stringify({clients:S.clients,visits:S.visits,cycles:S.cycles},null,2)],{type:'application/json'});
@@ -2824,12 +3027,12 @@ function render(){
     </nav>`;
 
   if(page==='map'){
-    if(CFG.mapsKey&&!window.google?.maps)loadMapsScript();
-    else if(window.google?.maps)initGMap();
+    if(CFG.mapsKey&&!window.naver?.maps)loadMapsScript();
+    else if(window.naver?.maps)initGMap();
   }
   if(page==='detail'){
     const c=S.clients.find(x=>x.id===pageParam);
-    if(c?.lat&&CFG.mapsKey&&window.google?.maps)initDetailMap(c);
+    if(c?.lat&&CFG.mapsKey&&window.naver?.maps)initDetailMap(c);
   }
 }
 
@@ -2890,17 +3093,22 @@ window.addEventListener('offline', ()=>{ updateOfflineBanner(); });
     const params=new URLSearchParams(window.location.search);
     const cfgB64=params.get('cfg');
     if(!cfgB64)return;
-    const decoded=JSON.parse(atob(decodeURIComponent(cfgB64)));
+    const decoded=JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(cfgB64)))));
     let changed=[];
+    if(decoded.gu && decoded.gu!==CFG.gasUrl){
+      CFG={...CFG,gasUrl:decoded.gu};changed.push('서버 GAS URL');
+    }
     if(decoded.mk && decoded.mk!==CFG.mapsKey){
-      CFG={...CFG,mapsKey:decoded.mk};changed.push('Maps API 키');
+      CFG={...CFG,mapsKey:decoded.mk};changed.push('네이버 지도 Client ID');
     }
     if(decoded.gk && decoded.gk!==CFG.geminiKey){
       CFG={...CFG,geminiKey:decoded.gk};changed.push('Gemini API 키');
     }
+    if(decoded.ph && decoded.ph!==CFG.adminPwHash){
+      CFG={...CFG,adminPwHash:decoded.ph};changed.push('관리자 비밀번호');
+    }
     if(changed.length){
       saveCfg(CFG);
-      // URL에서 파라미터 제거
       const cleanURL=window.location.origin+window.location.pathname;
       window.history.replaceState({},'',cleanURL);
       setTimeout(()=>{
