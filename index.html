@@ -930,25 +930,41 @@ function reqGPS(){
     if(watchId!==null) navigator.geolocation.clearWatch(watchId);
     if(!pos){gpsLoading=false;showGpsHelp('unavailable');render();return;}
     gps={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:Math.round(pos.coords.accuracy)};
-    gpsLoading=false;render();
+    gpsLoading=false;
+
     if(gps.accuracy>500){
       toast(`⚠ 위치 정확도 ${gps.accuracy}m — 실외에서 다시 시도하세요`);
     }
-    if(page==='map'&&_nmap){
-      _nmap.panTo(new naver.maps.LatLng(gps.lat,gps.lng));
-      _nmap.setZoom(16);
-      if(_gpsMarker) _gpsMarker.setMap(null);
-      _gpsMarker=new naver.maps.Marker({
-        position:new naver.maps.LatLng(gps.lat,gps.lng),
-        map:_nmap,
-        icon:{
-          content:`<div style="width:16px;height:16px;border-radius:50%;background:#3B9EFF;border:3px solid #fff;box-shadow:0 2px 8px rgba(59,158,255,.7)"></div>`,
-          anchor:new naver.maps.Point(8,8),
-        },
-        title:`현재 위치 (정확도 ±${gps.accuracy}m)`,
-        zIndex:999,
-      });
-    }else if(page==='map'){ scheduleInitGMap(); }
+
+    // ── GPS 획득 후 처리 ──────────────────────────────────────
+    // render()는 root.innerHTML로 #gmap을 파괴하므로 최대한 DOM 직접 수정을 우선.
+    // render()의 gmapNode 보존 로직이 있지만, finish() 시점에는 _nmap이
+    // 아직 없을 수도 있으므로(첫 GPS 획득 전 initGMap이 안 돌았을 경우)
+    // 두 경로를 모두 처리.
+
+    if(page==='map'){
+      if(_nmap){
+        // ── 지도가 이미 초기화됨 → DOM 직접 수정으로 render() 최소화 ──
+        // GPS bar 텍스트만 업데이트
+        const gpsTxt=document.getElementById('gps-txt');
+        if(gpsTxt) gpsTxt.textContent=`${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E · ±${gps.accuracy}m`;
+        else render(); // GPS bar가 없으면(첫 GPS 획득) render()로 생성
+        // 지도 중심 이동 + GPS 마커 교체
+        _nmap.panTo(new naver.maps.LatLng(gps.lat,gps.lng));
+        _nmap.setZoom(16);
+        if(_gpsMarker){try{_gpsMarker.setMap(null);}catch{} _gpsMarker=null;}
+        _addGpsMarker();
+        // 근처 거래처 목록만 갱신 (지도는 그대로)
+        _refreshNearby();
+      } else {
+        // ── 지도 미초기화 → render()로 GPS bar 추가 후 새로 초기화 ──
+        render();
+        scheduleInitGMap();
+      }
+    } else {
+      // 지도 페이지가 아니면 그냥 render()
+      render();
+    }
   };
 
   watchId=navigator.geolocation.watchPosition(
@@ -958,6 +974,9 @@ function reqGPS(){
       if(p.coords.accuracy<bestAccuracy){
         bestAccuracy=p.coords.accuracy;
         gps={lat:p.coords.latitude,lng:p.coords.longitude,accuracy:Math.round(p.coords.accuracy)};
+        // GPS bar 텍스트만 갱신 (render() 호출 없이 DOM 직접 업데이트 → 지도 유지)
+        const gpsTxt=document.getElementById('gps-txt');
+        if(gpsTxt) gpsTxt.textContent=`${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E · ±${gps.accuracy}m`;
       }
     },
     e=>{
@@ -1874,7 +1893,7 @@ function PageMap(){
     </div>
   </div>
   <div class="page">
-    ${gps?`<div class="gpb"><div class="gpd"></div><span>${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E${gps.accuracy?` · ±${gps.accuracy}m`:''}</span></div>`:''}
+    ${gps?`<div class="gpb"><div class="gpd"></div><span id="gps-txt">${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E${gps.accuracy?` · ±${gps.accuracy}m`:''}</span></div>`:''}
     ${CFG.mapsKey?'':'<div style="padding:8px 14px;font-size:11px;color:var(--tx3);background:var(--rbg);border-bottom:1px solid var(--bd)">⚠ 네이버 지도 Client ID 미설정 — 설정에서 입력하면 지도가 표시됩니다</div>'}
     <div id="gmap" style="display:${CFG.mapsKey?'block':'none'}"></div>
 
@@ -3194,6 +3213,15 @@ function render(){
   const root=document.getElementById('app');if(!root)return;
   if(!S.user){root.innerHTML=PageLogin();return;}
 
+  // ── #gmap 노드 보존 ────────────────────────────────────────
+  // render()는 root.innerHTML로 전체 DOM을 교체하므로
+  // #gmap이 파괴되면 naver.maps 인스턴스가 무효화됨.
+  // → _nmap이 초기화된 map 페이지에서는 #gmap 노드를 미리 저장,
+  //   innerHTML 교체 후 placeholder(새 빈 #gmap)와 swap하여 보존.
+  const gmapNode = (page==='map' && _nmap)
+    ? document.getElementById('gmap')
+    : null;
+
   let content='';
   if(page==='list')     content=PageList();
   else if(page==='import')   content=PageImport();
@@ -3226,10 +3254,25 @@ function render(){
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="${page==='settings'?2:1.5}"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>설정</div>
     </nav>`;
 
-  if(page==='map'){
+  // ── #gmap 복원 ───────────────────────────────────────────
+  if(gmapNode){
+    const placeholder=document.getElementById('gmap');
+    if(placeholder&&placeholder.parentNode){
+      placeholder.parentNode.replaceChild(gmapNode,placeholder);
+    }
+    // 지도 인스턴스는 그대로 유지 — GPS마커와 거래처 마커만 갱신
+    if(gps){
+      if(_gpsMarker){try{_gpsMarker.setMap(null);}catch{} _gpsMarker=null;}
+      _addGpsMarker();
+    }
+    placeMapMarkers();
+    // GPS bar / nearby list 텍스트는 이미 PageMap() 결과에 포함됨 (innerHTML로 교체됐으나
+    // #gmap 외 나머지 DOM은 정상 교체됨) → 추가 작업 불필요
+  } else if(page==='map'){
     if(CFG.mapsKey&&!window.naver?.maps) loadMapsScript();
     else if(window.naver?.maps) scheduleInitGMap(); // ← 반드시 async(setTimeout 0)로 호출
   }
+
   if(page==='detail'){
     const c=S.clients.find(x=>x.id===pageParam);
     if(c?.lat&&CFG.mapsKey&&window.naver?.maps) setTimeout(()=>initDetailMap(c),0);
