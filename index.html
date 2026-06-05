@@ -455,43 +455,48 @@ function parseRows(rows){
 }
 
 // ═══════════════════════════════════════════════
-// 3. GEMINI API
+// 3. OCR API (명함 인식)
 // ═══════════════════════════════════════════════
 // ═══════════════════════════════════════════════
-// Claude AI — 명함 OCR
-// 라우팅 전략:
-//   1순위: GAS 프록시 (Netlify/GitHub Pages 배포 환경 — CORS 우회)
-//   2순위: Gemini Vision (GAS 없을 때, Gemini 키 설정된 경우)
+// 명함 OCR — v2 라우팅 전략 (CLOVA OCR via GAS 프록시)
+//   1순위: GAS 프록시 ocrBusinessCard → 네이버 CLOVA OCR
+//          (Secret Key는 GAS 스크립트 속성에만 존재. 앱은 base64만 전송 → CORS·키노출 동시 해결)
+//   2순위: Gemini Vision (CLOVA 도메인 발급 대기 중 임시 폴백 — Gemini 키 설정 시에만)
+//   3순위: 수동 입력 안내
+// ※ CLOVA OCR 도메인 발급 전에는 1순위가 실패하므로 2/3순위로 자동 폴백됩니다.
 // ═══════════════════════════════════════════════
 const ClaudeAI = {
   async card(b64, onProgress) {
-    // ── 1순위: GAS 프록시를 통한 Claude API 호출 ──
+    // ── 1순위: GAS 프록시(ocrBusinessCard) → CLOVA OCR ──
     if (CFG.gasUrl) {
       try {
-        onProgress && onProgress('Claude Vision 분석 중...');
+        onProgress && onProgress('CLOVA OCR 분석 중...');
         const res = await fetch(CFG.gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify({
-            action: 'ocrCard',
+            action: 'ocrBusinessCard',     // ★v2: CLOVA OCR 프록시 액션
             user: S.user?.name || '',
-            imageB64: b64
+            imageBase64: b64,              // GAS가 기대하는 키
+            imageB64: b64,                // (구버전 GAS 호환용 별칭)
+            format: 'jpg'
           })
         });
         if (res.ok) {
           const json = await res.json();
           if (json.ok && json.data) {
-            // GAS는 { parsed: {...}, engine: 'claude'|'gemini' } 형태로 반환
+            // GAS(normalizeNameCard)는 정규화된 거래처 필드를 반환.
+            // 구버전({parsed:{...}}) / 신버전(평탄 객체) 모두 수용.
             const raw = json.data.parsed || json.data;
             const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            if (p && p.companyName !== undefined) {
-              const engine = json.data.engine || 'GAS';
+            if (p && (p.companyName !== undefined || p.contactName !== undefined)) {
+              const engine = json.data.engine || 'CLOVA';
               onProgress && onProgress(engine + ' 인식 완료');
               return {
                 companyName:  p.companyName  || '',
                 branchName:   p.branchName   || '',
                 contactName:  p.contactName  || '',
-                contactTitle: p.contactTitle || '',
+                contactTitle: p.contactTitle || p.title || '',
                 contactPhone: p.phone        || p.contactPhone || '',
                 fax:          p.fax          || '',
                 email:        p.email        || '',
@@ -500,25 +505,27 @@ const ClaudeAI = {
             }
           }
         }
-        // GAS 오류 시 Gemini로 폴백
-        console.warn('GAS OCR 실패 — Gemini로 폴백');
+        // GAS/CLOVA 미응답 → 폴백 (도메인 발급 대기 중이면 정상적인 흐름)
+        console.warn('CLOVA OCR(ocrBusinessCard) 미응답 — 폴백 진행');
       } catch(e) {
-        console.warn('GAS OCR fetch 오류:', e.message, '— Gemini로 폴백');
+        console.warn('CLOVA OCR fetch 오류:', e.message, '— 폴백 진행');
       }
     }
 
-    // ── 2순위: Gemini Vision 폴백 ──
+    // ── 2순위: Gemini Vision 임시 폴백 (CLOVA 도메인 발급 대기용) ──
     if (CFG.geminiKey) {
       return Gem.card(b64, (msg) => {
-        onProgress && onProgress('Gemini Vision 분석 중...');
+        onProgress && onProgress('임시 폴백: Gemini Vision 분석 중...');
       });
     }
 
-    throw new Error('OCR 서비스를 사용할 수 없습니다.\n\n' +
-      '해결 방법:\n' +
-      '• GAS 백엔드에 ocrCard 액션 추가 (권장)\n' +
-      '• 또는 설정에서 Gemini API 키 입력\n\n' +
-      '지금은 직접 입력을 사용해주세요.');
+    // ── 3순위: 수동 입력 안내 ──
+    throw new Error('명함 OCR을 사용할 수 없습니다.\n\n' +
+      '현재 네이버 CLOVA OCR 도메인 발급 대기 중입니다.\n' +
+      '도메인 발급 후 GAS 스크립트 속성에\n' +
+      'CLOVA_OCR_INVOKE_URL · CLOVA_OCR_SECRET 을 등록하면\n' +
+      '자동으로 동작합니다.\n\n' +
+      '지금은 아래 항목을 직접 입력해주세요.');
   }
 };
 
@@ -692,9 +699,12 @@ function loadMapsScript(){
   if(document.getElementById('nmaps-script')) return;
   const s=document.createElement('script');
   s.id='nmaps-script';
-  // submodules=geocoder : naver.maps.Service.geocode 사용에 필요
-  s.src=`https://oapi.map.naver.com/openapi/v3/maps.js?ncpClientId=${key}&submodules=geocoder&callback=onMapsLoaded`;
-  s.onerror=()=>{ toast('⚠ 네이버 지도 스크립트 로드 실패 — Client ID 또는 서비스 URL을 확인하세요'); };
+  // ── 네이버 지도 SDK 로드 (2025+ 통합 콘솔 사양) ───────────────
+  //   · 도메인 : oapi.map.naver.com  (구 openapi.map.naver.com 아님)
+  //   · 파라미터: ncpKeyId           (구 ncpClientId 아님 — 인증실패 주범)
+  //   · submodules=geocoder : naver.maps.Service.geocode 사용에 필요
+  s.src=`https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${key}&submodules=geocoder&callback=onMapsLoaded`;
+  s.onerror=()=>{ toast('⚠ 네이버 지도 스크립트 로드 실패 — Client ID 또는 콘솔의 웹 서비스 URL 등록을 확인하세요'); };
   document.head.appendChild(s);
 }
 
@@ -703,6 +713,39 @@ window.onMapsLoaded=()=>{
   _nmap=null; _nmapElId=null;
   if(page==='map') scheduleInitGMap();
 };
+
+// ── 네이버 지도 인증 실패 전역 핸들러 (v2) ───────────────────────
+//  Authentication Failed (200) 발생 시 네이버 SDK가 이 함수를 호출함.
+//  주원인: ① Client ID 오타  ② NCP 콘솔에 현재 도메인(웹 서비스 URL) 미등록
+//  → 사용자 안내 토스트 + 지도 탭이면 목록 탭으로 폴백
+window.navermaps_authFailure=function(){
+  console.error('[네이버 지도] Authentication Failed — Client ID 또는 도메인 등록 확인 필요');
+  const host = location.origin;
+  toast('⚠ 네이버 지도 인증 실패\nNCP 콘솔에 이 도메인을 등록했는지 확인하세요:\n'+host);
+  // 지도 탭에 있었다면 목록 모드로 안전하게 폴백
+  if(page==='map'){ page='list'; try{ render(); }catch{} }
+};
+
+// ── 좌표 → 주소 (reverseGeocode) : 현재 위치 주소 표기용 (v2) ──
+//  GPS 획득 후 GPS 바(#gps-txt)에 행정구역 주소를 덧붙여 표시.
+//  네이버 SDK·geocoder 서브모듈이 없으면 조용히 무시(좌표만 표시).
+function updateGpsAddress(){
+  if(!gps || !window.naver?.maps?.Service?.reverseGeocode) return;
+  try{
+    naver.maps.Service.reverseGeocode({
+      coords: new naver.maps.LatLng(gps.lat, gps.lng),
+      orders: [naver.maps.Service.OrderType.ROAD_ADDR, naver.maps.Service.OrderType.ADDR].join(',')
+    }, (status, response)=>{
+      if(status!==naver.maps.Service.Status.OK) return;
+      const addr = response.v2?.address?.roadAddress
+                || response.v2?.address?.jibunAddress || '';
+      if(!addr) return;
+      gps.address = addr;
+      const el=document.getElementById('gps-txt');
+      if(el) el.textContent = `${addr} · ±${gps.accuracy}m`;
+    });
+  }catch(e){ /* 좌표 표시 유지 */ }
+}
 
 // render() 직후에는 DOM 레이아웃이 미완성일 수 있으므로
 // 항상 setTimeout(0)으로 한 틱 뒤 실행
@@ -753,6 +796,7 @@ function initGMap(){
 
   if(gps) _addGpsMarker();
   placeMapMarkers();
+  if(gps) updateGpsAddress();
 }
 
 // ── 현재위치 마커 ──────────────────────────────────────────
@@ -949,6 +993,7 @@ function reqGPS(){
         const gpsTxt=document.getElementById('gps-txt');
         if(gpsTxt) gpsTxt.textContent=`${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E · ±${gps.accuracy}m`;
         else render(); // GPS bar가 없으면(첫 GPS 획득) render()로 생성
+        updateGpsAddress();
         // 지도 중심 이동 + GPS 마커 교체
         _nmap.panTo(new naver.maps.LatLng(gps.lat,gps.lng));
         _nmap.setZoom(16);
@@ -977,6 +1022,7 @@ function reqGPS(){
         // GPS bar 텍스트만 갱신 (render() 호출 없이 DOM 직접 업데이트 → 지도 유지)
         const gpsTxt=document.getElementById('gps-txt');
         if(gpsTxt) gpsTxt.textContent=`${gps.lat.toFixed(4)}°N, ${gps.lng.toFixed(4)}°E · ±${gps.accuracy}m`;
+        updateGpsAddress();
       }
     },
     e=>{
@@ -1285,7 +1331,7 @@ function PageLogin(){
         ${!hasCfg?`<div style="margin-top:4px;font-size:11px;color:var(--or);text-align:center;line-height:1.6">⚠ 관리자 초기 설정이 필요합니다<br>관리자 로그인 후 설정을 완료해주세요</div>`:''}
       </div>
       <div style="font-size:10px;color:var(--tx3);margin-top:28px;text-align:center;line-height:1.8">
-        Gemini AI · Google Sheets · 네이버 지도
+        CLOVA OCR · Google Sheets · 네이버 지도
       </div>
     </div>`;
 
@@ -2383,7 +2429,7 @@ function PageScan(){
     <div class="card" style="margin-top:0">
       <div style="font-size:11.5px;color:var(--tx2);line-height:1.75">
         <b style="color:var(--tx)">AI 명함 인식 안내</b><br>
-        • <b style="color:var(--ac)">Claude Vision</b> 으로 이미지 직접 분석<br>
+        • <b style="color:var(--ac)">CLOVA OCR</b> (GAS 프록시)로 명함 분석<br>
         • 한국어 명함 정확도 높음 (Sonnet 4 모델)<br>
         • API 키 불필요 · 인식 후 미리보기 → 저장
       </div>
@@ -2399,7 +2445,7 @@ function PageScan(){
         <div style="text-align:center;padding:18px 0">
           <div class="spin" style="width:28px;height:28px;border-width:3px;margin:0 auto 10px"></div>
           <div style="font-size:13px;font-weight:600;color:var(--tx2);margin-bottom:4px">${sc.progress||'분석 중...'}</div>
-          <div style="font-size:10.5px;color:var(--tx3)">Claude Vision (Sonnet 4) 분석 중...</div>
+          <div style="font-size:10.5px;color:var(--tx3)">CLOVA OCR 분석 중...</div>
         </div>`:''}
       ${sc.err?`<div style="color:var(--red);font-size:12px;padding:10px 12px;background:var(--rbg);border-radius:var(--rs);margin-bottom:10px;line-height:1.6">${sc.err.replace(/\n/g,'<br>')}</div>`:''}
       ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">
@@ -2476,7 +2522,7 @@ function PageScan(){
       <!-- ── AI 인식 결과 편집 폼 ── -->
       <div class="card" style="margin:0 0 0">
         <div class="row g2" style="margin-bottom:11px">
-          <span class="tag" style="background:rgba(59,158,255,.15);color:var(--ac);border:1px solid rgba(59,158,255,.3)">Claude Vision</span>
+          <span class="tag" style="background:rgba(59,158,255,.15);color:var(--ac);border:1px solid rgba(59,158,255,.3)">CLOVA OCR</span>
           <span style="font-size:11px;color:var(--tx3)">내용 확인 후 저장하세요</span>
         </div>
         <div class="ig"><label class="il">회사명 *</label><input type="text" id="f_co" value="${p.companyName||''}"></div>
@@ -2503,7 +2549,7 @@ function PageScan(){
           <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7" stroke-linecap="round"/></svg>
         </button>
         <div><div class="hdr-t" style="font-size:16px">신규 거래처 등록</div>
-        <div class="hdr-s">Claude Vision OCR</div></div>
+        <div class="hdr-s">CLOVA 명함 OCR</div></div>
       </div>
     </div>
   </div>
@@ -2546,7 +2592,7 @@ function onCardFile(input){
   r.readAsDataURL(f);
 }
 async function doScanAI(){
-  sc={...sc,loading:true,err:null,progress:'Claude Vision 분석 중...'};render();
+  sc={...sc,loading:true,err:null,progress:'CLOVA OCR 분석 중...'};render();
   try{
     const p=await ClaudeAI.card(sc.b64,(msg)=>{sc={...sc,progress:msg};render();});
     sc={...sc,step:2,parsed:p,loading:false,progress:''};
@@ -2669,41 +2715,41 @@ function PageSettings(){
       </div>
     </div>
 
-    <div class="slbl">AI 명함 OCR</div>
+    <div class="slbl">명함 OCR (네이버 CLOVA)</div>
     <div class="card">
       ${CFG.gasUrl ? `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-        <div style="width:8px;height:8px;border-radius:50%;background:var(--gn);flex-shrink:0"></div>
-        <span style="font-size:12px;font-weight:600;color:var(--gn)">Claude Vision (GAS 프록시) 활성화됨</span>
-      </div>
-      <div style="font-size:11px;color:var(--tx2);line-height:1.75">
-        명함 사진 → <b style="color:var(--ac)">GAS 서버</b> → <b style="color:var(--ac)">Claude Vision</b><br>
-        CORS 없이 안정적으로 동작합니다
-      </div>` : CFG.geminiKey ? `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <div style="width:8px;height:8px;border-radius:50%;background:var(--yw);flex-shrink:0"></div>
-        <span style="font-size:12px;font-weight:600;color:var(--yw)">Gemini Vision 폴백 모드</span>
+        <span style="font-size:12px;font-weight:600;color:var(--yw)">CLOVA OCR 연결 대기</span>
       </div>
       <div style="font-size:11px;color:var(--tx2);line-height:1.75">
-        GAS URL 미설정 → Gemini API로 OCR 처리 중<br>
-        <span style="color:var(--tx3)">GAS URL 설정 시 Claude Vision으로 자동 전환</span>
+        명함 사진 → <b style="color:var(--ac)">GAS 서버</b> → <b style="color:var(--ac)">CLOVA OCR</b><br>
+        Secret Key는 GAS 스크립트 속성에만 저장됩니다 (앱은 base64만 전송).<br>
+        <span style="color:var(--or)">⚠ CLOVA 도메인 발급 대기 중 — 발급 후 GAS 속성에<br>
+        CLOVA_OCR_INVOKE_URL · CLOVA_OCR_SECRET 등록 시 자동 동작</span>
       </div>` : `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <div style="width:8px;height:8px;border-radius:50%;background:var(--red);flex-shrink:0"></div>
         <span style="font-size:12px;font-weight:600;color:var(--red)">OCR 비활성화</span>
       </div>
       <div style="font-size:11px;color:var(--or);line-height:1.75">
-        GAS URL 또는 Gemini API 키 중 하나를 설정해주세요
+        먼저 GAS 서버 URL을 설정해주세요 (CLOVA OCR은 GAS 경유 호출)
       </div>`}
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd);line-height:1.7">
-        라우팅: GAS ocrCard 액션 → (실패 시) Gemini Vision 폴백
+        라우팅: GAS <b>ocrBusinessCard</b> → CLOVA OCR${CFG.geminiKey?' · (발급 대기 중 임시: Gemini 폴백)':''} → 수동 입력
       </div>
     </div>
 
-    <div class="slbl">Gemini API 키 (주소검색 · 목록 파싱)</div>
+    <div class="slbl">Gemini API 키 (선택 — 보조 기능)</div>
     <div class="card">
-      <div class="ig"><label class="il">Gemini API 키 (AI 주소검색 · 엑셀 파싱)</label>
-        <input type="password" id="s_gk" value="${CFG.geminiKey}" placeholder="AIza...">
+      <div style="font-size:10.5px;color:var(--tx3);margin-bottom:10px;line-height:1.7;padding:8px 10px;background:var(--rbg);border-radius:8px">
+        v2 기준 명함 OCR은 <b>CLOVA</b>로 이전됩니다. Gemini는 이제 선택 항목으로,
+        ① 네이버 지도 미설정 시 <b>주소→좌표 폴백</b> ② <b>엑셀/CSV 파싱</b>
+        ③ CLOVA 도메인 발급 전 <b>임시 OCR 폴백</b>에만 쓰입니다.
+        CLOVA 가동 후에는 비워두어도 됩니다.
+      </div>
+      <div class="ig"><label class="il">Gemini API 키 (선택)</label>
+        <input type="password" id="s_gk" value="${CFG.geminiKey}" placeholder="AIza... (비워두면 보조 기능만 비활성)">
       </div>
       <div class="ig" style="margin-top:10px"><label class="il">Gemini 모델명</label>
         <input type="text" id="s_gm" value="${CFG.geminiModel||GEMINI_MODEL_DEFAULT}"
@@ -2720,11 +2766,7 @@ function PageSettings(){
         <button class="btn bs bsm" style="width:auto" onclick="saveGeminiKey()">저장</button>
         ${CFG.geminiKey
           ? `<span style="font-size:10.5px;color:var(--gn)">✓ 키 설정됨 · <b style="font-family:var(--mo)">${CFG.geminiModel||GEMINI_MODEL_DEFAULT}</b></span>`
-          : '<span style="font-size:10.5px;color:var(--or)">⚠ 미설정 — AI 주소검색 비활성화 (명함 OCR은 정상)</span>'}
-      </div>
-      <div style="font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.8">
-        AI 주소 좌표검색 · 엑셀/CSV 거래처 파싱에 사용됩니다.<br>
-        Google AI Studio에서 발급 · 권장 모델: <b style="color:var(--ac)">gemini-2.5-pro</b>
+          : '<span style="font-size:10.5px;color:var(--tx3)">미설정 — 보조 기능(주소폴백·엑셀파싱·임시OCR) 비활성</span>'}
       </div>
     </div>
 
