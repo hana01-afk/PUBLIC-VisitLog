@@ -195,7 +195,7 @@ select option{background:var(--bg3)}
 // 0. CONFIG
 // ═══════════════════════════════════════════════
 // Gemini 기본 모델 — CFG.geminiModel 설정값으로 오버라이드 가능
-const GEMINI_MODEL_DEFAULT = 'gemini-2.5-pro';
+const GEMINI_MODEL_DEFAULT = 'gemini-2.0-flash';
 // Gemini 키/모델은 관리자 설정(CFG.geminiKey / CFG.geminiModel)으로 관리 — 하드코딩 금지
 const STORAGE_PREFIX = 'vl_hana_v5_user_';  // 사용자별 데이터 분리
 const STORAGE_LEGACY = 'vl_hana_v4';         // 마이그레이션용
@@ -2751,12 +2751,12 @@ function PageSettings(){
       </div>
       <div class="ig" style="margin-top:10px"><label class="il">Gemini 모델명</label>
         <input type="text" id="s_gm" value="${CFG.geminiModel||GEMINI_MODEL_DEFAULT}"
-          placeholder="gemini-2.5-pro"
+          placeholder="gemini-2.0-flash"
           list="gemini-models">
         <datalist id="gemini-models">
-          <option value="gemini-2.5-pro">
-          <option value="gemini-2.5-flash">
           <option value="gemini-2.0-flash">
+          <option value="gemini-2.5-flash">
+          <option value="gemini-2.5-pro">
           <option value="gemini-1.5-pro">
         </datalist>
       </div>
