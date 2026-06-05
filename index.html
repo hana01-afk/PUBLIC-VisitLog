@@ -458,28 +458,27 @@ function parseRows(rows){
 // 3. OCR API (명함 인식)
 // ═══════════════════════════════════════════════
 // ═══════════════════════════════════════════════
-// 명함 OCR — v2 라우팅 전략 (CLOVA OCR via GAS 프록시)
-//   1순위: GAS 프록시 ocrBusinessCard → 네이버 CLOVA OCR
-//          (Secret Key는 GAS 스크립트 속성에만 존재. 앱은 base64만 전송 → CORS·키노출 동시 해결)
-//   2순위: Gemini Vision (CLOVA 도메인 발급 대기 중 임시 폴백 — Gemini 키 설정 시에만)
+// 명함 OCR — 라우팅 전략
+//   1순위: GAS 프록시 ocrCard → Claude Vision API
+//          (API 키는 GAS 스크립트 속성(CLAUDE_KEY)에만 존재. 앱은 base64만 전송)
+//   2순위: Gemini Vision 폴백 (GAS 오류 또는 CLAUDE_KEY 미설정 시, GEMINI_KEY 필요)
 //   3순위: 수동 입력 안내
-// ※ CLOVA OCR 도메인 발급 전에는 1순위가 실패하므로 2/3순위로 자동 폴백됩니다.
 // ═══════════════════════════════════════════════
 const ClaudeAI = {
   async card(b64, onProgress) {
-    // ── 1순위: GAS 프록시(ocrBusinessCard) → CLOVA OCR ──
+    // ── 1순위: GAS 프록시(ocrCard) → Claude Vision ──
+    // GAS _dispatch()의 action 이름: 'ocrCard' / 파라미터: imageB64, mime
     if (CFG.gasUrl) {
       try {
-        onProgress && onProgress('CLOVA OCR 분석 중...');
+        onProgress && onProgress('AI 명함 분석 중...');
         const res = await fetch(CFG.gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify({
-            action: 'ocrBusinessCard',     // ★v2: CLOVA OCR 프록시 액션
+            action: 'ocrCard',   // GAS _dispatch case 'ocrCard' 와 일치
             user: S.user?.name || '',
-            imageBase64: b64,              // GAS가 기대하는 키
-            imageB64: b64,                // (구버전 GAS 호환용 별칭)
-            format: 'jpg'
+            imageB64: b64,       // GAS _ocrCard(imageB64, mimeType) 의 첫 번째 파라미터
+            mime: 'image/jpeg'   // GAS _ocrCard 두 번째 파라미터
           })
         });
         if (res.ok) {
@@ -490,7 +489,7 @@ const ClaudeAI = {
             const raw = json.data.parsed || json.data;
             const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
             if (p && (p.companyName !== undefined || p.contactName !== undefined)) {
-              const engine = json.data.engine || 'CLOVA';
+              const engine = json.data.engine || 'claude';
               onProgress && onProgress(engine + ' 인식 완료');
               return {
                 companyName:  p.companyName  || '',
@@ -505,26 +504,25 @@ const ClaudeAI = {
             }
           }
         }
-        // GAS/CLOVA 미응답 → 폴백 (도메인 발급 대기 중이면 정상적인 흐름)
-        console.warn('CLOVA OCR(ocrBusinessCard) 미응답 — 폴백 진행');
+        // GAS ocrCard 미응답 → Gemini 폴백
+        console.warn('GAS ocrCard 미응답 — Gemini 폴백 진행');
       } catch(e) {
-        console.warn('CLOVA OCR fetch 오류:', e.message, '— 폴백 진행');
+        console.warn('GAS ocrCard fetch 오류:', e.message, '— Gemini 폴백 진행');
       }
     }
 
-    // ── 2순위: Gemini Vision 임시 폴백 (CLOVA 도메인 발급 대기용) ──
+    // ── 2순위: Gemini Vision 폴백 (GAS URL 미설정 또는 GAS 오류 시) ──
     if (CFG.geminiKey) {
       return Gem.card(b64, (msg) => {
-        onProgress && onProgress('임시 폴백: Gemini Vision 분석 중...');
+        onProgress && onProgress('Gemini Vision 분석 중...');
       });
     }
 
     // ── 3순위: 수동 입력 안내 ──
-    throw new Error('명함 OCR을 사용할 수 없습니다.\n\n' +
-      '현재 네이버 CLOVA OCR 도메인 발급 대기 중입니다.\n' +
-      '도메인 발급 후 GAS 스크립트 속성에\n' +
-      'CLOVA_OCR_INVOKE_URL · CLOVA_OCR_SECRET 을 등록하면\n' +
-      '자동으로 동작합니다.\n\n' +
+    throw new Error('명함 OCR을 사용할 수 없습니다.\\n\\n' +
+      'GAS 서버 URL이 설정되지 않았거나 연결에 실패했습니다.\\n' +
+      '[설정 → GAS 서버 URL]을 확인하고,\\n' +
+      'GAS 스크립트 속성에 CLAUDE_KEY 가 등록되어 있는지 확인해주세요.\\n\\n' +
       '지금은 아래 항목을 직접 입력해주세요.');
   }
 };
@@ -2445,7 +2443,7 @@ function PageScan(){
         <div style="text-align:center;padding:18px 0">
           <div class="spin" style="width:28px;height:28px;border-width:3px;margin:0 auto 10px"></div>
           <div style="font-size:13px;font-weight:600;color:var(--tx2);margin-bottom:4px">${sc.progress||'분석 중...'}</div>
-          <div style="font-size:10.5px;color:var(--tx3)">CLOVA OCR 분석 중...</div>
+          <div style="font-size:10.5px;color:var(--tx3)">AI 명함 분석 중...</div>
         </div>`:''}
       ${sc.err?`<div style="color:var(--red);font-size:12px;padding:10px 12px;background:var(--rbg);border-radius:var(--rs);margin-bottom:10px;line-height:1.6">${sc.err.replace(/\n/g,'<br>')}</div>`:''}
       ${!sc.loading&&!sc.err?`<button class="btn bp" onclick="doScanAI()">
@@ -2592,7 +2590,7 @@ function onCardFile(input){
   r.readAsDataURL(f);
 }
 async function doScanAI(){
-  sc={...sc,loading:true,err:null,progress:'CLOVA OCR 분석 중...'};render();
+  sc={...sc,loading:true,err:null,progress:'AI 명함 분석 중...'};render();
   try{
     const p=await ClaudeAI.card(sc.b64,(msg)=>{sc={...sc,progress:msg};render();});
     sc={...sc,step:2,parsed:p,loading:false,progress:''};
@@ -2736,7 +2734,7 @@ function PageSettings(){
         먼저 GAS 서버 URL을 설정해주세요 (CLOVA OCR은 GAS 경유 호출)
       </div>`}
       <div style="font-size:10px;color:var(--tx3);margin-top:8px;padding-top:8px;border-top:1px solid var(--bd);line-height:1.7">
-        라우팅: GAS <b>ocrBusinessCard</b> → CLOVA OCR${CFG.geminiKey?' · (발급 대기 중 임시: Gemini 폴백)':''} → 수동 입력
+        라우팅: GAS <b>ocrCard</b> → Claude Vision${CFG.geminiKey?' · (폴백: Gemini Vision)':''} → 수동 입력
       </div>
     </div>
 
