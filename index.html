@@ -2750,15 +2750,12 @@ function PageSettings(){
         <input type="password" id="s_gk" value="${CFG.geminiKey}" placeholder="AIza... (비워두면 보조 기능만 비활성)">
       </div>
       <div class="ig" style="margin-top:10px"><label class="il">Gemini 모델명</label>
-        <input type="text" id="s_gm" value="${CFG.geminiModel||GEMINI_MODEL_DEFAULT}"
-          placeholder="gemini-2.0-flash"
-          list="gemini-models">
-        <datalist id="gemini-models">
-          <option value="gemini-2.0-flash">
-          <option value="gemini-2.5-flash">
-          <option value="gemini-2.5-pro">
-          <option value="gemini-1.5-pro">
-        </datalist>
+        <select id="s_gm" style="width:100%;padding:11px 12px;background:var(--bg3);color:var(--tx);border:1px solid var(--bd2);border-radius:var(--rs);font-size:13.5px;font-family:var(--mo);appearance:none;-webkit-appearance:none;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238BAABF' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 12px center;cursor:pointer">
+          <option value="gemini-2.0-flash" ${(CFG.geminiModel||GEMINI_MODEL_DEFAULT)==='gemini-2.0-flash'?'selected':''}>gemini-2.0-flash　　(권장 · 빠름)</option>
+          <option value="gemini-2.5-flash" ${(CFG.geminiModel||GEMINI_MODEL_DEFAULT)==='gemini-2.5-flash'?'selected':''}>gemini-2.5-flash　　(최신 · 빠름)</option>
+          <option value="gemini-2.5-pro"   ${(CFG.geminiModel||GEMINI_MODEL_DEFAULT)==='gemini-2.5-pro'  ?'selected':''}>gemini-2.5-pro　　　(고성능 · 느림)</option>
+          <option value="gemini-1.5-pro"   ${(CFG.geminiModel||GEMINI_MODEL_DEFAULT)==='gemini-1.5-pro'  ?'selected':''}>gemini-1.5-pro　　　(구형 · 안정)</option>
+        </select>
       </div>
       <div class="row g2" style="flex-wrap:wrap;align-items:center">
         <button class="btn bs bsm" style="width:auto" onclick="saveGeminiKey()">저장</button>
